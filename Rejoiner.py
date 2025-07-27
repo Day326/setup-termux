@@ -210,19 +210,16 @@ def is_roblox_running(device, game_id=None):
     try:
         ps_output = device.shell("ps | grep com.roblox.client")
         if "com.roblox.client" in ps_output:
-            cmd = "dumpsys activity | grep com.roblox.client"
-            activity_output = device.shell(cmd)
-            if "com.roblox.client" in activity_output:
-                if game_id:
-                    cmd = f"logcat -d | grep -i 'PlaceId.*{game_id}'"
-                    output = device.shell(cmd)
-                    if game_id in output:
-                        print_status("SUCCESS", f"Roblox running with Game ID {game_id}")
-                        return True
-                    print_status("WARNING", "Roblox running but not in specified game")
-                    return "menu"
-                print_status("SUCCESS", "Roblox running")
-                return True
+            if game_id:
+                cmd = f"logcat -d | grep -i 'PlaceId.*{game_id}'"
+                output = device.shell(cmd)
+                if game_id in output:
+                    print_status("SUCCESS", f"Roblox running with Game ID {game_id}")
+                    return True
+                print_status("WARNING", "Roblox running but not in specified game")
+                return "menu"
+            print_status("SUCCESS", "Roblox running")
+            return True
         print_status("WARNING", "Roblox not running")
         return False
     except Exception as e:
@@ -325,7 +322,6 @@ def launch_game(config, game_id, private_server, retries=3):
                 print_status("ERROR", "No valid ID. Launch aborted")
                 return False
         url = f"roblox://placeID={game_id}"
-    deep_link_failed = 0
     for attempt in range(retries):
         try:
             device.shell("settings put system accelerometer_rotation 0")
@@ -336,30 +332,29 @@ def launch_game(config, game_id, private_server, retries=3):
             cmd = f"am start -a android.intent.action.RUN -d '{url}' -n com.roblox.client/.ActivityLauncher"
             print_status("INFO", f"Attempt {attempt + 1}/{retries}: {cmd}", "Launching")
             device.shell(cmd)
-            time.sleep(20)  # Extended wait for app to start
+            time.sleep(15)
             if is_roblox_running(device, game_id):
                 print_status("SUCCESS", f"Launched with {'private server' if private_server else f'Game ID {game_id}'}", "Running")
                 return True
-            deep_link_failed += 1
-            print_status("INFO", f"Deep link attempt {attempt + 1} failed. Checking activity...", "Debug")
-            cmd = "dumpsys activity | grep com.roblox.client"
-            activity_output = device.shell(cmd)
-            if "com.roblox.client" in activity_output:
-                print_status("WARNING", "Deep link failed but Roblox app started. Joining manually recommended...")
-                cmd = "am start -a android.intent.action.RUN -n com.roblox.client/.ActivityLauncher"
-                device.shell(cmd)
-                time.sleep(20)
-                if is_roblox_running(device):
-                    print_status("SUCCESS", "Launched. Join game manually if needed", "Running")
-                    if deep_link_failed == retries:
-                        print_status("WARNING", "Deep links failed repeatedly. Manual join required.")
-                    return True
-            print_status("WARNING", "Deep link and direct launch failed. Retrying...")
+            print_status("WARNING", "Deep link failed. Launching app directly...")
+            cmd = "am start -a android.intent.action.RUN -n com.roblox.client/.ActivityLauncher"
+            device.shell(cmd)
+            time.sleep(15)
+            if is_roblox_running(device):
+                print_status("SUCCESS", "Launched Roblox. Attempting to join game...", "Running")
+                # Try to trigger game join via logcat (basic attempt)
+                if game_id:
+                    device.shell(f"logcat -c && logcat | grep -m 1 'PlaceId.*{game_id}'")
+                    time.sleep(5)
+                    if is_game_joined(device, game_id, private_server):
+                        print_status("SUCCESS", f"Joined game with ID {game_id}", "Running")
+                        return True
+                return True
         except Exception as e:
             print_status("ERROR", f"Launch error: {e}", "Failed")
         print_status("WARNING", f"Attempt {attempt + 1} failed. Retrying...", "Retrying")
         time.sleep(5)
-    print_status("ERROR", "Launch failed after retries. Open Roblox manually and use option 7 to verify.", "Failed")
+    print_status("ERROR", "Launch failed after retries. Check emulator/Roblox setup.", "Failed")
     return False
 
 # Close Roblox app
@@ -459,7 +454,7 @@ def auto_rejoin(config):
                 print_status("WARNING", "Roblox not running. Rejoining...", "Rejoining")
                 close_roblox(device)
                 if not launch_game(config, config["game_id"], config["private_server"]):
-                    print_status("ERROR", "Rejoin failed. Check Game ID or open Roblox manually.", "Failed")
+                    print_status("ERROR", "Rejoin failed. Check emulator/Roblox setup.", "Failed")
                     if config["game_id"] and not validate_game_id(config["game_id"]):
                         print_status("ERROR", "Invalid Game ID. Enter new ID:")
                         new_id = input("> ").strip()
@@ -519,7 +514,7 @@ def auto_rejoin(config):
 def main():
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=================================
-       Koala Hub Auto-Rejoin v3.1
+       Koala Hub Auto-Rejoin v3.2
 ================================={COLORS['RESET']}
 Note: For cloud phones (e.g., UGPhone), enable floating windows manually if supported.
 """)

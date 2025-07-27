@@ -12,9 +12,17 @@ yes | pkg upgrade
 yes | pkg install android-tools
 yes | pkg install python python-pip
 pip install --upgrade pip
+
 pip install requests psutil prettytable pure-python-adb
+if ! pip show prettytable > /dev/null 2>&1; then
+    echo "Failed to install prettytable. Retrying..."
+    pip install prettytable
+fi
 
 adb kill-server
 adb start-server
 
 curl -Ls "https://raw.githubusercontent.com/Day326/setup-termux/refs/heads/main/Rejoiner.py" -o /sdcard/Download/Rejoiner.py
+
+echo "Setup complete. Run 'cd /sdcard/Download && python Rejoiner.py' to start."
+echo "Ensure USB debugging is enabled on your device or cloud phone."

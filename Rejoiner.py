@@ -118,11 +118,11 @@ def validate_private_server(private_server):
     try:
         if "privateServerLinkCode" in private_server and "roblox.com" in private_server:
             place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
-            if place_id and validate_game_id_api(place_id):
+            if place_id and validate_game_id(place_id):
                 return True, place_id
         elif "share?code=" in private_server and "roblox.com" in private_server:
             place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
-            if place_id and validate_game_id_api(place_id):
+            if place_id and validate_game_id(place_id):
                 print_formatted("WARNING", "Using share link as private server. Ensure it’s a valid server link.")
                 return True, place_id
         print_formatted("ERROR", f"Invalid private server link: {private_server}. Must contain 'privateServerLinkCode' or be a valid share link with PlaceID.")

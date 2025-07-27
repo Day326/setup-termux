@@ -48,7 +48,7 @@ def load_config():
             "private_server": "",
             "check_delay": 30,
             "active_account": "",
-            "check_method": "both"  # Default to check both executor and Roblox
+            "check_method": "both"
         }
         setup_wizard(config)
         return config
@@ -88,10 +88,11 @@ def validate_game_id_api(game_id):
     try:
         url = f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={game_id}"
         response = requests.get(url, timeout=10)
+        print_formatted("INFO", f"API Response Status: {response.status_code} for Game ID {game_id}")
         if response.status_code == 200 and response.json().get("data"):
             print_formatted("SUCCESS", f"Game ID {game_id} is valid.")
             return True
-        print_formatted("ERROR", f"Game ID {game_id} is invalid or not found.")
+        print_formatted("ERROR", f"Game ID {game_id} is invalid or not found. Response: {response.text[:100]}...")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Error validating Game ID via API: {e}")
@@ -181,21 +182,25 @@ def select_account(config, choice=None):
 
 # Validate game ID
 def validate_game_id(game_id):
-    if not game_id.isdigit() or len(game_id) < 7 or len(game_id) > 15:
-        print_formatted("ERROR", f"Invalid Game ID {game_id}. It should be a 7-15 digit number.")
+    if not game_id.isdigit() or len(game_id) < 7 or len(game_id) > 18:
+        print_formatted("ERROR", f"Invalid Game ID {game_id}. It should be a 7-18 digit number.")
         return False
     return validate_game_id_api(game_id)
 
 # Validate private server link
 def validate_private_server(private_server):
     try:
-        if "privateServerLinkCode" not in private_server or "roblox.com" not in private_server:
-            print_formatted("ERROR", "Invalid private server link. Must contain 'privateServerLinkCode' and 'roblox.com'.")
-            return False, None
-        place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
-        if place_id and validate_game_id_api(place_id):
-            return True, place_id
-        print_formatted("ERROR", f"Invalid PlaceID in private server link.")
+        if "privateServerLinkCode" in private_server and "roblox.com" in private_server:
+            place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
+            if place_id and validate_game_id_api(place_id):
+                return True, place_id
+        elif "share?code=" in private_server and "roblox.com" in private_server:
+            # Extract PlaceID from share link if possible
+            place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
+            if place_id and validate_game_id_api(place_id):
+                print_formatted("WARNING", "Using share link as private server. Ensure it’s a valid server link.")
+                return True, place_id
+        print_formatted("ERROR", f"Invalid private server link: {private_server}. Must contain 'privateServerLinkCode' or be a valid share link with PlaceID.")
         return False, None
     except Exception as e:
         print_formatted("ERROR", f"Error validating private server link: {e}")
@@ -205,7 +210,7 @@ def validate_private_server(private_server):
 def set_game(config):
     print_formatted("INFO", "Enter Game ID (PlaceID) or Private Server Link (e.g., https://www.roblox.com/games/...?privateServerLinkCode=...):")
     game_input = input("> ").strip()
-    if "privateServerLinkCode" in game_input:
+    if "roblox.com" in game_input:
         is_valid, place_id = validate_private_server(game_input)
         if is_valid:
             config["private_server"] = game_input
@@ -273,7 +278,7 @@ def is_executor_running(device):
     if not device:
         return False
     try:
-        executor_packages = ["com.codex", "com.arceusx", "com.delta"]  # Add more if needed
+        executor_packages = ["com.codex", "com.arceusx", "com.delta"]
         for pkg in executor_packages:
             output = device.shell(f"ps | grep {pkg}")
             if output.strip():
@@ -341,7 +346,7 @@ def is_game_joined(device, game_id, private_server):
         return False
     try:
         if private_server:
-            link_code = private_server.split("privateServerLinkCode=")[-1].split("&")[0]
+            link_code = private_server.split("privateServerLinkCode=")[-1].split("&")[0] if "privateServerLinkCode=" in private_server else private_server.split("share?code=")[1].split("&")[0]
             cmd = f"logcat -d | grep -i '{link_code}'"
             output = device.shell(cmd)
             if output.strip():
@@ -368,7 +373,6 @@ def check_for_freezes_or_errors(device):
         if output.strip():
             print_formatted("ERROR", f"Detected issue in logs: {output.strip()}")
             return True
-        # Check for freeze (no recent activity in logs)
         cmd = "logcat -d | grep com.roblox.client | tail -n 10"
         output = device.shell(cmd)
         if not output.strip():
@@ -388,7 +392,7 @@ def launch_game(config, game_id, private_server, retries=3):
         is_valid, place_id = validate_private_server(private_server)
         if not is_valid:
             return False
-        url = private_server.replace("https://www.roblox.com", "roblox://")
+        url = private_server.replace("https://www.roblox.com", "roblox://") if "privateServerLinkCode" in private_server else f"roblox://placeID={place_id}&linkCode={private_server.split('share?code=')[1].split('&')[0]}"
         game_id = place_id
     else:
         if not validate_game_id(game_id):
@@ -405,7 +409,6 @@ def launch_game(config, game_id, private_server, retries=3):
         url = f"roblox://placeID={game_id}"
     for attempt in range(retries):
         try:
-            # Force landscape orientation
             device.shell("settings put system accelerometer_rotation 0")
             device.shell("input keyevent 19")  # Rotate to landscape
             cmd = f"am start -a android.intent.action.VIEW -d '{url}' -n com.roblox.client/.ActivityLauncher"
@@ -443,7 +446,7 @@ def close_roblox(device, user_id):
         print_formatted("ERROR", f"Error closing Roblox: {e}")
         return False
 
-# Check executor and Roblox status (Option 7)
+# Check executor and Roblox status
 def check_executor_and_roblox(config):
     device = check_adb()
     if not device:

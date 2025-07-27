@@ -12,12 +12,7 @@ yes | pkg upgrade
 yes | pkg install android-tools
 yes | pkg install python python-pip
 pip install --upgrade pip
-
 pip install requests psutil prettytable pure-python-adb
-if ! pip show prettytable > /dev/null 2>&1; then
-    echo "Failed to install prettytable. Retrying..."
-    pip install prettytable
-fi
 
 adb kill-server
 adb start-server

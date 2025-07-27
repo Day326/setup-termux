@@ -92,8 +92,11 @@ def setup_wizard(config):
     set_check_delay(config)
     print_formatted("INFO", "Setup complete. You can modify settings from the main menu.")
 
-# Validate game ID via Roblox API
-def validate_game_id_api(game_id):
+# Validate game ID via Roblox API (with fallback)
+def validate_game_id(game_id):
+    if not game_id.isdigit() or len(game_id) < 7 or len(game_id) > 18:
+        print_formatted("ERROR", f"Invalid Game ID {game_id}. It should be a 7-18 digit number.")
+        return False
     try:
         url = f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={game_id}"
         response = requests.get(url, timeout=10)
@@ -101,11 +104,32 @@ def validate_game_id_api(game_id):
         if response.status_code == 200 and response.json().get("data"):
             print_formatted("SUCCESS", f"Game ID {game_id} is valid.")
             return True
+        if response.status_code == 401:
+            print_formatted("WARNING", f"API returned 401 Unauthorized for Game ID {game_id}. Assuming valid due to format match.")
+            return True  # Bypass 401 error if format is correct
         print_formatted("ERROR", f"Game ID {game_id} is invalid or not found. Response: {response.text[:100]}...")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Error validating Game ID via API: {e}")
-        return False
+        return True  # Fallback to allow game ID if API fails
+
+# Validate private server link
+def validate_private_server(private_server):
+    try:
+        if "privateServerLinkCode" in private_server and "roblox.com" in private_server:
+            place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
+            if place_id and validate_game_id_api(place_id):
+                return True, place_id
+        elif "share?code=" in private_server and "roblox.com" in private_server:
+            place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
+            if place_id and validate_game_id_api(place_id):
+                print_formatted("WARNING", "Using share link as private server. Ensure it’s a valid server link.")
+                return True, place_id
+        print_formatted("ERROR", f"Invalid private server link: {private_server}. Must contain 'privateServerLinkCode' or be a valid share link with PlaceID.")
+        return False, None
+    except Exception as e:
+        print_formatted("ERROR", f"Error validating private server link: {e}")
+        return False, None
 
 # Get User ID from username
 def get_user_id(username):
@@ -189,35 +213,16 @@ def select_account(config, choice=None):
     else:
         print_formatted("ERROR", "Invalid choice.")
 
-# Validate game ID
-def validate_game_id(game_id):
-    if not game_id.isdigit() or len(game_id) < 7 or len(game_id) > 18:
-        print_formatted("ERROR", f"Invalid Game ID {game_id}. It should be a 7-18 digit number.")
-        return False
-    return validate_game_id_api(game_id)
-
-# Validate private server link
-def validate_private_server(private_server):
-    try:
-        if "privateServerLinkCode" in private_server and "roblox.com" in private_server:
-            place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
-            if place_id and validate_game_id_api(place_id):
-                return True, place_id
-        elif "share?code=" in private_server and "roblox.com" in private_server:
-            place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
-            if place_id and validate_game_id_api(place_id):
-                print_formatted("WARNING", "Using share link as private server. Ensure it’s a valid server link.")
-                return True, place_id
-        print_formatted("ERROR", f"Invalid private server link: {private_server}. Must contain 'privateServerLinkCode' or be a valid share link with PlaceID.")
-        return False, None
-    except Exception as e:
-        print_formatted("ERROR", f"Error validating private server link: {e}")
-        return False, None
-
 # Set game ID or private server link
 def set_game(config):
     print_formatted("INFO", "Enter Game ID (PlaceID) or Private Server Link (e.g., https://www.roblox.com/games/...?privateServerLinkCode=...):")
     game_input = input("> ").strip()
+    if game_input.lower() == "delete":
+        config["game_id"] = ""
+        config["private_server"] = ""
+        save_config(config)
+        print_formatted("SUCCESS", "Game ID and Private Server Link deleted. Set a new one if needed.")
+        return
     if "roblox.com" in game_input:
         is_valid, place_id = validate_private_server(game_input)
         if is_valid:
@@ -577,6 +582,7 @@ Root required for auto-rejoin feature.
 {COLORS['CYAN']}7:{COLORS['RESET']} Check Executor & Roblox Status
 {COLORS['CYAN']}8:{COLORS['RESET']} Start Auto-Rejoin
 {COLORS['CYAN']}9:{COLORS['RESET']} Exit
+{COLORS['CYAN']}10:{COLORS['RESET']} Delete Game ID
 """)
         choice = input(f"{COLORS['CYAN']}> {COLORS['RESET']}").strip()
         if choice == "1":
@@ -598,6 +604,11 @@ Root required for auto-rejoin feature.
         elif choice == "9":
             print_formatted("INFO", "Exiting Koala Hub Auto-Rejoin...")
             break
+        elif choice == "10":
+            config["game_id"] = ""
+            config["private_server"] = ""
+            save_config(config)
+            print_formatted("SUCCESS", "Game ID and Private Server Link deleted. Set a new one if needed.")
         else:
             print_formatted("ERROR", "Invalid choice. Please try again.")
 

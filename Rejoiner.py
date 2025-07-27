@@ -414,7 +414,6 @@ def auto_rejoin(config):
             print_formatted("ERROR", f"Unexpected error in auto-rejoin loop: {e}")
             time.sleep(10)
 
-# Main menu
 def main():
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================

@@ -4,8 +4,10 @@ import os
 import json
 from ppadb.client import Client
 
+# Configuration file to store account and game data
 CONFIG_FILE = "/sdcard/Download/roblox_config.json"
 
+# Load or initialize config
 def load_config():
     try:
         if os.path.exists(CONFIG_FILE):
@@ -25,6 +27,7 @@ def save_config(config):
     except Exception as e:
         print(f"Error saving config: {e}")
 
+# Get User ID from username using Roblox API
 def get_user_id(username):
     try:
         url = f"https://api.roblox.com/users/get-by-username?username={username}"
@@ -45,6 +48,7 @@ def get_user_id(username):
         print(f"Error fetching User ID: {e}")
         return None
 
+# Add account (username or user ID)
 def add_account(config):
     print("Enter Roblox Username or User ID:")
     account = input("> ").strip()
@@ -65,6 +69,7 @@ def add_account(config):
     else:
         print("Account already exists.")
 
+# Delete account
 def delete_account(config):
     if not config["accounts"]:
         print("No accounts to delete.")
@@ -85,6 +90,7 @@ def delete_account(config):
     except ValueError:
         print("Invalid input. Please enter a number.")
 
+# Select active account for auto-rejoin
 def select_account(config):
     if not config["accounts"]:
         print("No accounts available. Please add an account first.")
@@ -103,16 +109,21 @@ def select_account(config):
     except ValueError:
         print("Invalid input. Please enter a number.")
 
+# Validate game ID
 def validate_game_id(game_id):
     try:
-        if not game_id.isdigit() or len(game_id) < 9 or len(game_id) > 12:
-            print(f"Invalid Game ID {game_id}. It should be a 9-10 digit number.")
+        # Allow up to 15 digits to test longer IDs, but warn if unusual
+        if not game_id.isdigit() or len(game_id) < 9 or len(game_id) > 15:
+            print(f"Invalid Game ID {game_id}. It should be a 9-15 digit number.")
             return False
+        if len(game_id) > 12:
+            print(f"Warning: Game ID {game_id} is longer than typical (9-12 digits). It may be invalid.")
         return True
     except Exception as e:
         print(f"Error validating Game ID: {e}")
         return False
 
+# Set game ID or private server link
 def set_game(config):
     print("Enter Game ID (PlaceID) or Private Server Link:")
     game_input = input("> ").strip()
@@ -136,6 +147,7 @@ def set_game(config):
     save_config(config)
     print("Game settings updated.")
 
+# Set check delay
 def set_check_delay(config):
     try:
         print("Enter check delay (seconds, minimum 10):")
@@ -149,6 +161,7 @@ def set_check_delay(config):
     except ValueError:
         print("Invalid input. Please enter a number.")
 
+# Check if ADB is set up and device is connected
 def check_adb():
     try:
         adb = Client(host="127.0.0.1", port=5037)
@@ -162,45 +175,52 @@ def check_adb():
         print(f"ADB connection error: {e}")
         return None
 
-def launch_game(game_id, private_server):
+# Launch Roblox game via ADB with multiple fallbacks and retries
+def launch_game(game_id, private_server, retries=2):
     device = check_adb()
     if not device:
         return False
     if not validate_game_id(game_id):
         print(f"Cannot launch game: Invalid Game ID {game_id}")
         return False
-    try:
-        url = f"roblox://placeID={game_id}" if not private_server else private_server
-        cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
-        print(f"Executing ADB command: {cmd}")
-        device.shell(cmd)
-        time.sleep(10)
-        if is_roblox_running(device):
-            print(f"Launched Roblox game with PlaceID {game_id}.")
-            return True
-        print("Roblox failed to launch with roblox://. Trying robloxmobile://...")
-        url = f"robloxmobile://placeID={game_id}" if not private_server else private_server
-        cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
-        print(f"Executing ADB command: {cmd}")
-        device.shell(cmd)
-        time.sleep(10)
-        if is_roblox_running(device):
-            print(f"Launched Roblox game with PlaceID {game_id} using robloxmobile://.")
-            return True
-        print("Both URL schemes failed. Trying to launch Roblox app without PlaceID...")
-        cmd = "am start -n com.roblox.client/.ActivityLauncher"
-        print(f"Executing ADB command: {cmd}")
-        device.shell(cmd)
-        time.sleep(10)
-        if is_roblox_running(device):
-            print("Launched Roblox app (no PlaceID).")
-            return True
-        print("Failed to launch Roblox with all methods.")
-        return False
-    except Exception as e:
-        print(f"Error launching game: {e}")
-        return False
+    for attempt in range(retries):
+        try:
+            # Try roblox://
+            url = f"roblox://placeID={game_id}" if not private_server else private_server
+            cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
+            print(f"Attempt {attempt + 1}/{retries} - Executing ADB command: {cmd}")
+            device.shell(cmd)
+            time.sleep(12)  # Increased delay for emulator stability
+            if is_roblox_running(device):
+                print(f"Launched Roblox game with PlaceID {game_id}.")
+                return True
+            # Fallback to robloxmobile://
+            print("Roblox failed to launch with roblox://. Trying robloxmobile://...")
+            url = f"robloxmobile://placeID={game_id}" if not private_server else private_server
+            cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
+            print(f"Attempt {attempt + 1}/{retries} - Executing ADB command: {cmd}")
+            device.shell(cmd)
+            time.sleep(12)
+            if is_roblox_running(device):
+                print(f"Launched Roblox game with PlaceID {game_id} using robloxmobile://.")
+                return True
+            # Fallback to launching Roblox app without PlaceID
+            print("Both URL schemes failed. Trying to launch Roblox app without PlaceID...")
+            cmd = "am start -n com.roblox.client/.ActivityLauncher"
+            print(f"Attempt {attempt + 1}/{retries} - Executing ADB command: {cmd}")
+            device.shell(cmd)
+            time.sleep(12)
+            if is_roblox_running(device):
+                print("Launched Roblox app (no PlaceID).")
+                return True
+        except Exception as e:
+            print(f"Error launching game on attempt {attempt + 1}: {e}")
+        print(f"Attempt {attempt + 1} failed. Retrying after delay...")
+        time.sleep(5)
+    print("Failed to launch Roblox with all methods after retries.")
+    return False
 
+# Check if Roblox is running
 def is_roblox_running(device):
     if not device:
         return False
@@ -211,6 +231,7 @@ def is_roblox_running(device):
         print(f"Error checking if Roblox is running: {e}")
         return False
 
+# Check for errors in logs
 def check_for_errors(device):
     if not device:
         return False
@@ -225,6 +246,7 @@ def check_for_errors(device):
         print(f"Error checking logs: {e}")
         return False
 
+# Close Roblox app and clear data
 def close_roblox(device):
     if not device:
         return False
@@ -232,12 +254,13 @@ def close_roblox(device):
         device.shell("am force-stop com.roblox.client")
         device.shell("pm clear com.roblox.client")
         print("Closed Roblox app and cleared cache.")
-        time.sleep(10)
+        time.sleep(12)  # Increased delay for emulator
         return True
     except Exception as e:
         print(f"Error closing Roblox: {e}")
         return False
 
+# Main auto-rejoin loop
 def auto_rejoin(config):
     if not config["active_account"]:
         print("No active account selected. Please select an account.")
@@ -271,8 +294,9 @@ def auto_rejoin(config):
             break
         except Exception as e:
             print(f"Unexpected error in auto-rejoin loop: {e}")
-            time.sleep(10)
+            time.sleep(10)  # Prevent rapid looping on errors
 
+# Main menu
 def main():
     print("""
     Welcome to Koala Hub Auto-Rejoin!

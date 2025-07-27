@@ -103,6 +103,16 @@ def select_account(config):
     except ValueError:
         print("Invalid input. Please enter a number.")
 
+def validate_game_id(game_id):
+    try:
+        if not game_id.isdigit() or len(game_id) < 9 or len(game_id) > 12:
+            print(f"Invalid Game ID {game_id}. It should be a 9-10 digit number.")
+            return False
+        return True
+    except Exception as e:
+        print(f"Error validating Game ID: {e}")
+        return False
+
 def set_game(config):
     print("Enter Game ID (PlaceID) or Private Server Link:")
     game_input = input("> ").strip()
@@ -110,11 +120,17 @@ def set_game(config):
         config["private_server"] = game_input
         try:
             config["game_id"] = game_input.split('/')[4]
+            if not validate_game_id(config["game_id"]):
+                config["game_id"] = ""
+                config["private_server"] = ""
+                return
             print("Note: Private server links may require additional authentication.")
         except IndexError:
             print("Invalid private server link format. Please enter a valid link.")
             return
     else:
+        if not validate_game_id(game_input):
+            return
         config["game_id"] = game_input
         config["private_server"] = ""
     save_config(config)
@@ -150,12 +166,15 @@ def launch_game(game_id, private_server):
     device = check_adb()
     if not device:
         return False
+    if not validate_game_id(game_id):
+        print(f"Cannot launch game: Invalid Game ID {game_id}")
+        return False
     try:
         url = f"roblox://placeID={game_id}" if not private_server else private_server
         cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
         print(f"Executing ADB command: {cmd}")
         device.shell(cmd)
-        time.sleep(8)
+        time.sleep(10)
         if is_roblox_running(device):
             print(f"Launched Roblox game with PlaceID {game_id}.")
             return True
@@ -164,11 +183,19 @@ def launch_game(game_id, private_server):
         cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
         print(f"Executing ADB command: {cmd}")
         device.shell(cmd)
-        time.sleep(8)
+        time.sleep(10)
         if is_roblox_running(device):
             print(f"Launched Roblox game with PlaceID {game_id} using robloxmobile://.")
             return True
-        print("Failed to launch Roblox with both URL schemes.")
+        print("Both URL schemes failed. Trying to launch Roblox app without PlaceID...")
+        cmd = "am start -n com.roblox.client/.ActivityLauncher"
+        print(f"Executing ADB command: {cmd}")
+        device.shell(cmd)
+        time.sleep(10)
+        if is_roblox_running(device):
+            print("Launched Roblox app (no PlaceID).")
+            return True
+        print("Failed to launch Roblox with all methods.")
         return False
     except Exception as e:
         print(f"Error launching game: {e}")
@@ -203,8 +230,9 @@ def close_roblox(device):
         return False
     try:
         device.shell("am force-stop com.roblox.client")
-        print("Closed Roblox app.")
-        time.sleep(8)
+        device.shell("pm clear com.roblox.client")
+        print("Closed Roblox app and cleared cache.")
+        time.sleep(10)
         return True
     except Exception as e:
         print(f"Error closing Roblox: {e}")
@@ -218,7 +246,7 @@ def auto_rejoin(config):
     check_delay = config["check_delay"]
     
     if not game_id:
-        print("No game ID set. Please set a game ID or private server link.")
+        print("No game ID set. Please set a Game ID or private server link.")
         return
     
     device = check_adb()

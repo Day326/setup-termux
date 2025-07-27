@@ -6,27 +6,42 @@ import subprocess
 from ppadb.client import Client
 
 # Configuration file to store account and game data
-CONFIG_FILE = "roblox_config.json"
+CONFIG_FILE = "/sdcard/Download/roblox_config.json"
 
 # Load or initialize config
 def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {"accounts": [], "game_id": "", "private_server": "", "check_delay": 30, "active_account": ""}
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        print("Config file not found. Creating new config.")
+        return {"accounts": [], "game_id": "", "private_server": "", "check_delay": 30, "active_account": ""}
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        return {"accounts": [], "game_id": "", "private_server": "", "check_delay": 30, "active_account": ""}
 
 def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=4)
+        print(f"Config saved to {CONFIG_FILE}")
+    except Exception as e:
+        print(f"Error saving config: {e}")
 
-# Get User ID from username using Roblox API (no token needed)
+# Get User ID from username using Roblox API
 def get_user_id(username):
     try:
         url = f"https://api.roblox.com/users/get-by-username?username={username}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            return str(data.get("Id"))
+            user_id = str(data.get("Id"))
+            if user_id:
+                print(f"Resolved username {username} to User ID {user_id}")
+                return user_id
+            else:
+                print(f"No User ID found for username {username}")
+                return None
         else:
             print(f"Failed to get User ID for {username}. Status code: {response.status_code}")
             return None
@@ -46,7 +61,7 @@ def add_account(config):
         user_id = get_user_id(account)
         if user_id:
             account = user_id
-            print(f"Converted username {account} to User ID {user_id}.")
+            print(f"Converted username to User ID {user_id}.")
         else:
             print(f"Could not validate username {account}. Using as is.")
     if account not in config["accounts"]:
@@ -102,8 +117,12 @@ def set_game(config):
     game_input = input("> ").strip()
     if "privateServerLinkCode" in game_input:
         config["private_server"] = game_input
-        config["game_id"] = game_input.split('/')[4]  # Extract PlaceID from link
-        print("Note: Private server links require a .ROBLOSECURITY token, which is disabled. Using PlaceID only.")
+        try:
+            config["game_id"] = game_input.split('/')[4]  # Extract PlaceID from link
+            print("Note: Private server links may require additional authentication.")
+        except IndexError:
+            print("Invalid private server link format. Please enter a valid link.")
+            return
     else:
         config["game_id"] = game_input
         config["private_server"] = ""
@@ -113,27 +132,42 @@ def set_game(config):
 # Set check delay
 def set_check_delay(config):
     try:
-        print("Enter check delay (seconds):")
+        print("Enter check delay (seconds, minimum 10):")
         delay = int(input("> ").strip())
+        if delay < 10:
+            print("Delay must be at least 10 seconds.")
+            return
         config["check_delay"] = delay
         save_config(config)
         print(f"Check delay set to {delay} seconds.")
     except ValueError:
         print("Invalid input. Please enter a number.")
 
-# Launch Roblox game via ADB (no token needed for public games)
-def launch_game(game_id, private_server):
+# Check if ADB is set up and device is connected
+def check_adb():
     try:
         adb = Client(host="127.0.0.1", port=5037)
         devices = adb.devices()
         if not devices:
-            print("No devices connected. Ensure ADB is enabled.")
-            return False
-        
-        device = devices[0]
-        url = f"roblox://placeID={game_id}"
+            print("No devices connected. Ensure ADB is enabled and device is connected.")
+            return None
+        print(f"Connected to device: {devices[0].serial}")
+        return devices[0]
+    except Exception as e:
+        print(f"ADB connection error: {e}")
+        return None
+
+# Launch Roblox game via ADB
+def launch_game(game_id, private_server):
+    device = check_adb()
+    if not device:
+        return False
+    try:
+        url = f"roblox://placeID={game_id}" if not private_server else private_server
         cmd = f"am start -a android.intent.action.VIEW -d '{url}' com.roblox.client"
+        print(f"Executing ADB command: {cmd}")
         device.shell(cmd)
+        time.sleep(5)  # Wait for app to launch
         print(f"Launched Roblox game with PlaceID {game_id}.")
         return True
     except Exception as e:
@@ -141,20 +175,25 @@ def launch_game(game_id, private_server):
         return False
 
 # Check if Roblox is running
-def is_roblox_running():
+def is_roblox_running(device):
+    if not device:
+        return False
     try:
-        result = subprocess.run("ps aux | grep com.roblox.client", shell=True, capture_output=True, text=True)
-        return "com.roblox.client" in result.stdout
-    except:
+        output = device.shell("ps | grep com.roblox.client")
+        return "com.roblox.client" in output
+    except Exception as e:
+        print(f"Error checking if Roblox is running: {e}")
         return False
 
 # Check for errors in logs (e.g., kick, ban, disconnect)
-def check_for_errors():
+def check_for_errors(device):
+    if not device:
+        return False
     try:
-        cmd = "adb logcat -d | grep -iE 'kicked|disconnected|banned|error|freeze|crash|timeout'"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if result.stdout:
-            print(f"Detected error: {result.stdout.strip()}")
+        cmd = "logcat -d | grep -iE 'kicked|disconnected|banned|error|freeze|crash|timeout'"
+        output = device.shell(cmd)
+        if output.strip():
+            print(f"Detected error in logs: {output.strip()}")
             return True
         return False
     except Exception as e:
@@ -162,17 +201,14 @@ def check_for_errors():
         return False
 
 # Close Roblox app
-def close_roblox():
-    try:
-        adb = Client(host="127.0.0.1", port=5037)
-        devices = adb.devices()
-        if devices:
-            device = devices[0]
-            device.shell("am force-stop com.roblox.client")
-            print("Closed Roblox app.")
-            time.sleep(5)  # Increased delay to ensure app closes
-            return True
+def close_roblox(device):
+    if not device:
         return False
+    try:
+        device.shell("am force-stop com.roblox.client")
+        print("Closed Roblox app.")
+        time.sleep(5)  # Ensure app is fully closed
+        return True
     except Exception as e:
         print(f"Error closing Roblox: {e}")
         return False
@@ -189,13 +225,20 @@ def auto_rejoin(config):
         print("No game ID set. Please set a game ID or private server link.")
         return
     
+    device = check_adb()
+    if not device:
+        print("Cannot start auto-rejoin due to ADB connection failure.")
+        return
+    
     print(f"Starting Koala Hub Auto-Rejoin for account {config['active_account']} and game ID {game_id}...")
     while True:
-        if not is_roblox_running() or check_for_errors():
+        if not is_roblox_running(device) or check_for_errors(device):
             print("Error detected or Roblox not running. Closing and rejoining...")
-            close_roblox()
-            time.sleep(5)  # Wait before rejoining to avoid rapid loops
-            launch_game(game_id, "")
+            close_roblox(device)
+            time.sleep(5)  # Wait before rejoining
+            launch_game(game_id, config["private_server"])
+        else:
+            print("Roblox is running normally.")
         time.sleep(check_delay)
 
 # Main menu
@@ -210,6 +253,8 @@ def main():
     while True:
         print("\nKoala Hub Auto-Rejoin Menu:")
         print(f"Active Account: {config['active_account'] or 'None'}")
+        print(f"Game ID: {config['game_id'] or 'None'}")
+        print(f"Check Delay: {config['check_delay']} seconds")
         print("1: Add Account")
         print("2: Delete Account")
         print("3: Select Account")

@@ -88,8 +88,8 @@ def check_adb():
         if not devices:
             # Try restarting ADB
             print_formatted("WARNING", "No devices found. Restarting ADB...")
-            os.system("adb kill-server")
-            os.system("adb start-server")
+            subprocess.run(["adb", "kill-server"])
+            subprocess.run(["adb", "start-server"])
             time.sleep(2)
             devices = adb.devices()
             
@@ -198,7 +198,7 @@ def prepare_roblox(device):
         # 1. Force stop
         close_roblox(device)
         
-        # 2. Clear data if root available
+        # 2. Clear data only if necessary
         if is_root_available():
             device.shell("su -c 'pm clear com.roblox.client'")
             time.sleep(2)
@@ -226,25 +226,29 @@ def launch_game(config, device):
         else:
             url = f"roblox://placeId={config['game_id']}"
         
-        # Build launch command
+        # Build launch command with explicit intent
         launch_cmd = (
             f"am start -a android.intent.action.VIEW "
             f"-d '{url}' "
-            f"-n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher "
-            f"--activity-clear-task "
-            f"--activity-no-history"
+            f"-n {ROBLOX_PACKAGE}/.ActivityLauncher "
+            f"--activity-clear-top "
+            f"--activity-single-top"
         )
         
-        # Execute launch
-        device.shell(launch_cmd)
-        time.sleep(5)  # Initial launch delay
+        # Execute launch with retries
+        for attempt in range(3):
+            device.shell(launch_cmd)
+            time.sleep(5)  # Initial launch delay
+            
+            # Verify launch
+            for _ in range(10):
+                if is_roblox_running(device):
+                    print_formatted("SUCCESS", "Roblox launched successfully")
+                    return True
+                time.sleep(2)
+            print_formatted("WARNING", f"Launch attempt {attempt + 1} failed, retrying...")
         
-        # Verify launch
-        for _ in range(10):
-            if is_roblox_running(device):
-                return True
-            time.sleep(1)
-        
+        print_formatted("ERROR", "Failed to launch Roblox after multiple attempts")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
@@ -539,7 +543,7 @@ def auto_rejoin(config):
                     print_formatted("INFO", "Launching game...")
                     if launch_game(config, device):
                         # Wait extra time for game to load
-                        time.sleep(10)
+                        time.sleep(15)
                         
                         # Verify we're actually in game
                         if not is_game_joined(device, config["game_id"], config["private_server"]):
@@ -565,10 +569,13 @@ def auto_rejoin(config):
         close_roblox(device)
 
 def keep_roblox_active(device):
-    """Periodically bring Roblox to foreground"""
+    """Periodically check if Roblox is in foreground"""
     try:
-        # Bring to foreground every 30 seconds
-        device.shell(f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher")
+        # Check if Roblox is in foreground
+        output = device.shell("dumpsys window windows | grep mCurrentFocus")
+        if "com.roblox.client" not in output:
+            device.shell(f"am start -n {ROBLOX_PACKAGE}/.ActivityLauncher")
+            print_formatted("INFO", "Brought Roblox to foreground")
         return True
     except Exception as e:
         print_formatted("WARNING", f"Keepalive error: {e}")
@@ -582,7 +589,7 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v3.5
+       Koala Hub Auto-Rejoin v3.6
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -637,14 +644,14 @@ def main():
     
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v3.5
+       Koala Hub Auto-Rejoin v3.6
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
 • Complete working solution
 • Fixed ADB connection issues
-• Proper game launching
+• Improved game launching
 • Separate delete options
-• Improved stability
+• Enhanced stability for emulators
 {COLORS['BOLD']}Note:{COLORS['RESET']} For UGPhone/Emulator/Rooted devices
 """)
     

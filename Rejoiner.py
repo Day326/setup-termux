@@ -186,9 +186,14 @@ def is_account_logged_in(device, user_id):
         cmd = f"logcat -d | grep -i 'UserId.*{user_id}'"
         output = device.shell(cmd)
         if user_id in output:
-            print(f"Account {user_id} is logged in.")
+            print(f"Account {user_id} is logged in (detected in logs).")
             return True
-        print(f"Account {user_id} not detected in logs.")
+        cmd = f"dumpsys activity | grep -i 'com.roblox.client.*{user_id}'"
+        output = device.shell(cmd)
+        if user_id in output:
+            print(f"Account {user_id} is logged in (detected in activity).")
+            return True
+        print(f"Account {user_id} not detected as logged in.")
         return False
     except Exception as e:
         print(f"Error checking account login: {e}")
@@ -268,13 +273,10 @@ def close_roblox(device, user_id):
             return False
         if is_account_logged_in(device, user_id):
             print("Correct account is logged in. Closing Roblox without clearing cache.")
-            device.shell("am force-stop com.roblox.client")
-            time.sleep(15)
         else:
-            print("Account not logged in or incorrect. Clearing cache and closing Roblox.")
-            device.shell("am force-stop com.roblox.client")
-            device.shell("pm clear com.roblox.client")
-            time.sleep(15)
+            print("Account not logged in or incorrect. Closing Roblox without clearing cache to avoid logout.")
+        device.shell("am force-stop com.roblox.client")
+        time.sleep(15)
         print("Closed Roblox app.")
         return True
     except Exception as e:

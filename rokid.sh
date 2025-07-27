@@ -9,5 +9,4 @@ yes | pkg upgrade
 yes | pkg i python
 yes | pkg i python-pip
 pip install requests pytz pyjwt pycryptodome rich colorama flask psutil discord python-socketio
-curl -Ls "https://raw.githubusercontent.com/Day326/setup-termux/refs/heads/main/Rejoiner.py" -o /sdcard/Download/Rejoiner.py
-echo "Rokid setup complete. Run 'cd /sdcard/Download && python Rejoiner.py' to start Koala Hub Auto-Rejoin."
+curl -Ls "https://cdn.shouko.dev/RokidManager/neyoshiiuem/main/__main_loader__.py" -o /sdcard/Download/shouko.py

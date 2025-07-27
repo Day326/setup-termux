@@ -21,3 +21,4 @@ curl -Ls "https://raw.githubusercontent.com/Day326/setup-termux/refs/heads/main/
 
 echo "Setup complete. Run 'cd /sdcard/Download && python Rejoiner.py' to start."
 echo "Ensure USB debugging is enabled on your device or cloud phone."
+echo "Root is required for the auto-rejoin feature."

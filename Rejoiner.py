@@ -20,6 +20,15 @@ COLORS = {
 # Configuration file
 CONFIG_FILE = "/sdcard/Download/roblox_config.json"
 
+# Check if root is available
+def is_root_available():
+    try:
+        import subprocess
+        subprocess.run(["su", "-c", "echo test"], capture_output=True, text=True)
+        return True
+    except:
+        return False
+
 # Print formatted console message with table-like structure
 def print_formatted(level, message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -195,7 +204,6 @@ def validate_private_server(private_server):
             if place_id and validate_game_id_api(place_id):
                 return True, place_id
         elif "share?code=" in private_server and "roblox.com" in private_server:
-            # Extract PlaceID from share link if possible
             place_id = private_server.split("games/")[1].split("/")[0] if "games/" in private_server else ""
             if place_id and validate_game_id_api(place_id):
                 print_formatted("WARNING", "Using share link as private server. Ensure it’s a valid server link.")
@@ -409,8 +417,12 @@ def launch_game(config, game_id, private_server, retries=3):
         url = f"roblox://placeID={game_id}"
     for attempt in range(retries):
         try:
-            device.shell("settings put system accelerometer_rotation 0")
-            device.shell("input keyevent 19")  # Rotate to landscape
+            if is_root_available():
+                device.shell("su -c 'settings put system accelerometer_rotation 0'")
+                device.shell("su -c 'input keyevent 19'")  # Rotate to landscape with root
+            else:
+                device.shell("settings put system accelerometer_rotation 0")
+                device.shell("input keyevent 19")  # Non-root fallback
             cmd = f"am start -a android.intent.action.VIEW -d '{url}' -n com.roblox.client/.ActivityLauncher"
             print_formatted("INFO", f"Attempt {attempt + 1}/{retries} - Launching: {cmd}")
             device.shell(cmd)
@@ -432,14 +444,24 @@ def close_roblox(device, user_id):
         if is_executor_running(device) and not check_for_freezes_or_errors(device):
             print_formatted("INFO", "Executor is active and no issues detected. Skipping closure.")
             return False
-        if is_account_logged_in(device, user_id):
-            print_formatted("INFO", "Minimizing Roblox to preserve login.")
-            device.shell("input keyevent 4")  # Back key
-            time.sleep(5)
+        if is_root_available():
+            if is_account_logged_in(device, user_id):
+                print_formatted("INFO", "Minimizing Roblox to preserve login.")
+                device.shell("su -c 'input keyevent 4'")  # Back key with root
+                time.sleep(5)
+            else:
+                print_formatted("WARNING", "Account not logged in. Force-stopping Roblox.")
+                device.shell("su -c 'am force-stop com.roblox.client'")
+                time.sleep(5)
         else:
-            print_formatted("WARNING", "Account not logged in. Force-stopping Roblox.")
-            device.shell("am force-stop com.roblox.client")
-            time.sleep(5)
+            if is_account_logged_in(device, user_id):
+                print_formatted("INFO", "Minimizing Roblox to preserve login.")
+                device.shell("input keyevent 4")  # Back key without root
+                time.sleep(5)
+            else:
+                print_formatted("WARNING", "Account not logged in. Force-stopping Roblox.")
+                device.shell("am force-stop com.roblox.client")
+                time.sleep(5)
         print_formatted("SUCCESS", "Closed Roblox app.")
         return True
     except Exception as e:
@@ -476,6 +498,9 @@ def check_executor_and_roblox(config):
 
 # Auto-rejoin loop
 def auto_rejoin(config):
+    if not is_root_available():
+        print_formatted("ERROR", "Auto-rejoin is only supported on rooted devices. Please root your device or emulator and try again.")
+        return
     if not config["active_account"]:
         print_formatted("ERROR", "No active account selected. Please select an account.")
         return
@@ -526,8 +551,9 @@ def main():
        Koala Hub Auto-Rejoin v3.0
 ====================================={COLORS['RESET']}
 Created for the Koala Hub community.
-Supports cloud phones and emulators with ADB.
-No root required, but USB debugging must be enabled.
+Supports cloud phones (e.g., UGPhone) and emulators with ADB.
+Root required for auto-rejoin feature.
+[SAFETY NOTE] This script is safe for emulators/cloud phones when used as intended. Avoid entering personal data and respect Roblox/UGPhone terms to avoid bans.
 """)
     config = load_config()
     while True:

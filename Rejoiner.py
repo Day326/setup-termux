@@ -54,7 +54,7 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 40,  # Increased to 40s
+        "launch_delay": 40,
         "retry_delay": 10
     }
     try:
@@ -158,6 +158,17 @@ def close_roblox(device, is_rooted):
 # ======================
 # GAME LAUNCH FUNCTIONS
 # ======================
+def detect_main_activity(device):
+    try:
+        # Try to get the main activity from package info
+        cmd = f"cmd package resolve-activity --brief {ROBLOX_PACKAGE} | tail -n 1"
+        activity = device.shell(cmd).strip()
+        if activity and "/" in activity:
+            return activity.split("/")[1]
+        return "com.roblox.client.StartupActivity"  # Default fallback
+    except:
+        return "com.roblox.client.StartupActivity"
+
 def prepare_roblox(device, config):
     try:
         print_formatted("INFO", "Preparing Roblox for launch...")
@@ -171,10 +182,13 @@ def prepare_roblox(device, config):
 def launch_game(config, device):
     try:
         is_rooted = is_root_available()
+        main_activity = detect_main_activity(device)
+        
         # Launch Roblox app directly
-        launch_cmd = f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher"
-        print_formatted("INFO", "Launching Roblox app...")
+        launch_cmd = f"am start -n {ROBLOX_PACKAGE}/{main_activity}"
+        print_formatted("INFO", f"Launching Roblox with activity {main_activity}...")
         result = device.shell(launch_cmd)
+        
         if "Error" not in result:
             print_formatted("SUCCESS", "Roblox launch command executed")
         else:
@@ -189,9 +203,10 @@ def launch_game(config, device):
                 print_formatted("SUCCESS", "Successfully joined game")
                 return True
             if i % 5 == 0 and is_rooted:
-                device.shell(f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher")
+                # Try to bring app to foreground if not already
+                device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
 
-        print_formatted("WARNING", "Game launch timed out. Root required for full functionality.")
+        print_formatted("WARNING", "Game launch timed out")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
@@ -411,6 +426,26 @@ def toggle_game_validation(config):
 # ======================
 # STATUS CHECKS
 # ======================
+def is_executor_running(device):
+    try:
+        packages = ["com.codex", "com.arceusx", "com.delta"]
+        for pkg in packages:
+            output = device.shell(f"ps -A | grep {pkg}")
+            if output.strip():
+                return True
+        return False
+    except Exception as e:
+        print_formatted("ERROR", f"Executor check error: {e}")
+        return False
+
+def is_account_logged_in(device, user_id):
+    try:
+        output = device.shell(f"logcat -d -t 200 | grep -i 'user.*id.*{user_id}'")
+        return user_id in output
+    except Exception as e:
+        print_formatted("ERROR", f"Account check error: {e}")
+        return False
+
 def check_status(config):
     device = check_adb()
     if not device:
@@ -431,26 +466,6 @@ def check_status(config):
         logged_in = is_account_logged_in(device, config["active_account"])
         print_formatted("SUCCESS" if logged_in else "WARNING", f"Account: {'Logged in' if logged_in else 'Not logged in'}")
     print_formatted("INFO", "Status check complete")
-
-def is_executor_running(device):
-    try:
-        packages = ["com.codex", "com.arceusx", "com.delta"]
-        for pkg in packages:
-            output = device.shell(f"ps -A | grep {pkg}")
-            if output.strip():
-                return True
-        return False
-    except Exception as e:
-        print_formatted("ERROR", f"Executor check error: {e}")
-        return False
-
-def is_account_logged_in(device, user_id):
-    try:
-        output = device.shell(f"logcat -d -t 200 | grep -i 'user.*id.*{user_id}'")
-        return user_id in output
-    except Exception as e:
-        print_formatted("ERROR", f"Account check error: {e}")
-        return False
 
 # ======================
 # AUTO-REJOIN

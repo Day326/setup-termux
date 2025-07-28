@@ -47,8 +47,8 @@ def is_root_available():
 
 def check_memory():
     memory = psutil.virtual_memory()
-    if memory.available / (1024 * 1024) < 100:  # Less than 100MB free
-        print_formatted("WARNING", "Low memory detected (<100MB). This may cause crashes.")
+    if memory.available / (1024 * 1024) < 150:  # Increased to 150MB free
+        print_formatted("WARNING", "Low memory detected (<150MB). This may cause crashes.")
         return False
     return True
 
@@ -63,8 +63,8 @@ def load_config():
         "max_retries": 3,
         "game_validation": True,
         "launch_delay": 60,
-        "retry_delay": 25,
-        "force_kill_delay": 6,
+        "retry_delay": 20,
+        "force_kill_delay": 8,
         "minimize_crashes": True,
         "launch_attempts": 3
     }
@@ -178,7 +178,7 @@ def detect_main_activity(device):
         try:
             result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{activity}")
             if "Error" not in result:
-                time.sleep(3)
+                time.sleep(4)
                 if is_roblox_running(device) and not is_in_error_state(get_current_activity(device)):
                     return activity
         except:
@@ -188,7 +188,7 @@ def detect_main_activity(device):
 def is_game_joined(device, game_id, private_server):
     try:
         device.shell("logcat -c")
-        time.sleep(1)
+        time.sleep(2)
 
         patterns = [
             f"place[._]?id.*{game_id}",
@@ -224,24 +224,24 @@ def close_roblox(device, is_rooted, config=None):
         if config and config.get("minimize_crashes", True):
             print_formatted("INFO", "Using safe close method...")
             device.shell("input keyevent HOME")
-            time.sleep(3)
-            device.shell(f"am force-stop {ROBLOX_PACKAGE}")
             time.sleep(4)
+            device.shell(f"am force-stop {ROBLOX_PACKAGE}")
+            time.sleep(5)
         else:
             if is_rooted:
                 device.shell(f"su -c 'am force-stop {ROBLOX_PACKAGE}'")
-                time.sleep(3)
-                device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
                 time.sleep(4)
+                device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
+                time.sleep(5)
 
         # Aggressive cleanup with extended retry
-        for _ in range(6):  # Increased retries to 6
+        for _ in range(8):  # Increased retries to 8
             if get_roblox_process_count(device) > 0:
                 print_formatted("WARNING", f"Residual Roblox processes detected: {get_roblox_process_count(device)}")
                 device.shell(f"am kill {ROBLOX_PACKAGE}")
                 if is_rooted:
                     device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
-                time.sleep(4)
+                time.sleep(5)
             else:
                 break
 
@@ -263,7 +263,7 @@ def prepare_roblox(device, config):
         
         if is_roblox_running(device):
             close_roblox(device, is_rooted, config)
-        time.sleep(7)  # Increased delay
+        time.sleep(8)  # Increased delay
         return True
     except Exception as e:
         print_formatted("ERROR", f"Preparation error: {e}")
@@ -285,7 +285,7 @@ def launch_game(config, device):
                 else:
                     print_formatted("WARNING", f"Multiple instances detected: {process_count}, forcing close...")
                     close_roblox(device, is_rooted, config)
-                    time.sleep(7)
+                    time.sleep(8)
 
         for attempt in range(config.get("launch_attempts", 3)):
             print_formatted("INFO", f"Launch attempt {attempt + 1} of {config.get('launch_attempts', 3)}")
@@ -295,15 +295,15 @@ def launch_game(config, device):
                 if get_roblox_process_count(device) > 0:
                     print_formatted("WARNING", f"Existing Roblox instances detected: {get_roblox_process_count(device)}")
                     close_roblox(device, is_rooted, config)
-                    time.sleep(7)
+                    time.sleep(8)
 
                 # Single launch attempt
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-                time.sleep(15)  # Increased initial wait
+                time.sleep(20)  # Increased initial wait
                 
                 # Clear any dialogs
                 device.shell("input keyevent BACK")
-                time.sleep(3)
+                time.sleep(4)
                 
                 # Join game
                 if config["private_server"]:
@@ -312,27 +312,27 @@ def launch_game(config, device):
                     launch_url = f"roblox://placeID={config['game_id']}"
                 
                 device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
-                time.sleep(6)
+                time.sleep(8)
                 
                 # Bring to foreground
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-                time.sleep(6)
+                time.sleep(8)
 
                 # Verification with timeout and instance check
-                for i in range(config['launch_delay'] // 6):  # Adjusted interval
-                    time.sleep(6)
+                for i in range(config['launch_delay'] // 8):  # Adjusted interval
+                    time.sleep(8)
                     activity = get_current_activity(device)
                     if is_game_joined(device, config["game_id"], config["private_server"]):
                         process_count = get_roblox_process_count(device)
                         if process_count > 1:
                             print_formatted("WARNING", f"Multiple instances detected: {process_count}, forcing close...")
                             close_roblox(device, is_rooted, config)
-                            time.sleep(7)
+                            time.sleep(8)
                             break
                         print_formatted("SUCCESS", "Successfully joined game with single instance")
                         return True
                     elif is_in_error_state(activity):
-                        print_formatted("WARNING", f"Detected white screen or error state at {i*6}s")
+                        print_formatted("WARNING", f"Detected white screen or error state at {i*8}s")
                         break
                     
                     if i % 2 == 0 and is_rooted and get_roblox_process_count(device) > 1:
@@ -529,7 +529,7 @@ def set_check_method(config, device):
 
 def set_launch_delay(config, device):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 90):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 120):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -542,7 +542,7 @@ def set_launch_delay(config, device):
 
 def set_retry_delay(config, device):
     try:
-        print_formatted("INFO", "Enter retry delay (seconds, min 5, default 25):")
+        print_formatted("INFO", "Enter retry delay (seconds, min 5, default 30):")
         delay = int(input("> ").strip())
         if delay < 5:
             print_formatted("ERROR", "Minimum delay is 5 seconds")
@@ -583,7 +583,7 @@ def is_executor_running(device):
 def is_account_logged_in(device, user_id):
     try:
         device.shell("logcat -c")
-        time.sleep(1)
+        time.sleep(2)
         output = device.shell(f"logcat -d -t 200 | grep -i 'user.*id.*{user_id}'")
         return user_id in output
     except Exception as e:
@@ -711,7 +711,7 @@ def show_menu(config, device):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v5.0
+       Koala Hub Auto-Rejoin v5.1
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -720,7 +720,7 @@ def show_menu(config, device):
 {COLORS['CYAN']}• Check Delay: {config['check_delay']}s
 {COLORS['CYAN']}• Check Method: {config['check_method']}
 {COLORS['CYAN']}• Launch Delay: {config['launch_delay']}s
-{COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 25)}s
+{COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 30)}s
 {COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
 {COLORS['CYAN']}• Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
 {COLORS['CYAN']}• Launch Attempts: {config.get('launch_attempts', 3)}
@@ -739,7 +739,8 @@ def show_menu(config, device):
 {COLORS['CYAN']}11:{COLORS['RESET']} Check Status
 {COLORS['CYAN']}12:{COLORS['RESET']} Start Auto-Rejoin
 {COLORS['CYAN']}13:{COLORS['RESET']} Delete Game ID/Server
-{COLORS['CYAN']}14:{COLORS['RESET']} Exit
+{COLORS['CYAN']}14:{COLORS['RESET']} Reset Emulator State
+{COLORS['CYAN']}15:{COLORS['RESET']} Exit
 """)
         choice = input(f"{COLORS['CYAN']}> {COLORS['RESET']}").strip()
         if choice == "1":
@@ -769,11 +770,26 @@ def show_menu(config, device):
         elif choice == "13":
             delete_game_settings(config, device)
         elif choice == "14":
+            reset_emulator_state(device, is_rooted=is_root_available())
+        elif choice == "15":
             print_formatted("INFO", "Exiting...")
             break
         else:
             print_formatted("ERROR", "Invalid choice")
         input("Press Enter to continue...")
+
+def reset_emulator_state(device, is_rooted):
+    try:
+        print_formatted("INFO", "Resetting emulator state...")
+        if is_rooted:
+            device.shell("su -c 'am force-stop com.android.systemui'")
+            time.sleep(2)
+            device.shell("su -c 'reboot'")
+            print_formatted("WARNING", "Emulator will reboot. Restart the script after reboot.")
+        else:
+            print_formatted("ERROR", "Root access required to reset emulator state.")
+    except Exception as e:
+        print_formatted("ERROR", f"Reset failed: {e}")
 
 def main():
     if not check_memory():
@@ -782,7 +798,7 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v5.0
+       Koala Hub Auto-Rejoin v5.1
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
 • Reliable single-instance Roblox launching
@@ -790,6 +806,7 @@ def main():
 • Smart game detection and rejoin logic
 • Root-optimized for best performance
 • Emulator compatibility improvements
+• Manual emulator reset option
 """)
     device = check_adb()
     if not device:

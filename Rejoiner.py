@@ -20,7 +20,7 @@ COLORS = {
     "CYAN": "\033[96m"
 }
 
-CONFIG_FILE = "/sdcard/roblox_config.json"  # Changed to more accessible path
+CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
 ADB_PORT = 5037
 ADB_HOST = "127.0.0.1"
@@ -54,8 +54,8 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 60,  # Increased for emulator stability
-        "retry_delay": 10,
+        "launch_delay": 70,
+        "retry_delay": 15,
         "force_kill_delay": 5,
         "minimize_crashes": True,
         "launch_attempts": 3
@@ -63,7 +63,7 @@ def load_config():
     try:
         device = check_adb()
         if device:
-            device.shell(f"touch {CONFIG_FILE}")  # Ensure file exists
+            device.shell(f"touch {CONFIG_FILE}")
             output = device.shell(f"cat {CONFIG_FILE}")
             if output.strip():
                 config = json.loads(output)
@@ -134,6 +134,14 @@ def is_roblox_running(device):
         print_formatted("ERROR", f"Process check error: {e}")
         return False
 
+def get_roblox_process_count(device):
+    try:
+        output = device.shell(f"ps -A | grep {ROBLOX_PACKAGE}").strip()
+        return len(output.splitlines()) if output else 0
+    except Exception as e:
+        print_formatted("ERROR", f"Process count error: {e}")
+        return 0
+
 def get_current_activity(device):
     try:
         output = device.shell("dumpsys window windows | grep mCurrentFocus")
@@ -149,29 +157,28 @@ def is_in_main_menu(activity):
     return "MainActivity" in activity or "HomeActivity" in activity
 
 def is_in_error_state(activity):
-    return "ErrorActivity" in activity or "CrashActivity" in activity
+    return "ErrorActivity" in activity or "CrashActivity" in activity or "white" in activity.lower()
 
 def detect_main_activity(device):
     activities = [
         "com.roblox.client.StartupActivity",
         "com.roblox.client.MainActivity",
         "com.roblox.client.HomeActivity",
-        "com.roblox.client.LauncherActivity"  # Added for emulator compatibility
+        "com.roblox.client.LauncherActivity"
     ]
     for activity in activities:
         try:
             result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{activity}")
             if "Error" not in result:
-                time.sleep(2)
-                if is_roblox_running(device):
+                time.sleep(3)
+                if is_roblox_running(device) and not is_in_error_state(get_current_activity(device)):
                     return activity
         except:
             continue
-    return activities[0]  # Fallback to default
+    return activities[0]
 
 def is_game_joined(device, game_id, private_server):
     try:
-        # Clear logcat to avoid stale data
         device.shell("logcat -c")
         time.sleep(1)
 
@@ -206,23 +213,28 @@ def is_game_joined(device, game_id, private_server):
 
 def close_roblox(device, is_rooted, config=None):
     try:
-        if config.get("minimize_crashes", True):
+        if config and config.get("minimize_crashes", True):
             print_formatted("INFO", "Using safe close method...")
             device.shell("input keyevent HOME")
-            time.sleep(1)
+            time.sleep(2)
             device.shell(f"am force-stop {ROBLOX_PACKAGE}")
             time.sleep(config.get("force_kill_delay", 5))
         else:
             if is_rooted:
                 device.shell(f"su -c 'am force-stop {ROBLOX_PACKAGE}'")
-                time.sleep(config.get("force_kill_delay", 5))
-        
-        if is_roblox_running(device):
-            print_formatted("WARNING", "Roblox still running, trying alternative close...")
-            device.shell(f"am kill {ROBLOX_PACKAGE}")
-            time.sleep(2)
-        
-        return not is_roblox_running(device)
+                time.sleep(2)
+                device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
+                time.sleep(3)
+
+        for _ in range(3):
+            if get_roblox_process_count(device) > 0:
+                print_formatted("WARNING", "Residual Roblox processes detected, forcing kill...")
+                device.shell(f"am kill {ROBLOX_PACKAGE}")
+                time.sleep(2)
+            else:
+                break
+
+        return get_roblox_process_count(device) == 0
     except Exception as e:
         print_formatted("ERROR", f"Failed to close Roblox: {e}")
         return False
@@ -237,6 +249,7 @@ def prepare_roblox(device, config):
         
         if is_roblox_running(device):
             close_roblox(device, is_rooted, config)
+        time.sleep(5)
         return True
     except Exception as e:
         print_formatted("ERROR", f"Preparation error: {e}")
@@ -251,19 +264,17 @@ def launch_game(config, device):
             print_formatted("INFO", f"Launch attempt {attempt + 1} of {config.get('launch_attempts', 3)}")
             
             try:
-                # Ensure Roblox is closed
-                close_roblox(device, is_rooted, config)
-                time.sleep(2)
+                if get_roblox_process_count(device) > 0:
+                    print_formatted("WARNING", "Existing Roblox instances detected, closing all...")
+                    close_roblox(device, is_rooted, config)
+                    time.sleep(5)
 
-                # Launch Roblox
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-                time.sleep(10)  # Increased initial wait
+                time.sleep(15)
                 
-                # Clear any dialogs
                 device.shell("input keyevent BACK")
-                time.sleep(1)
+                time.sleep(2)
                 
-                # Join game
                 if config["private_server"]:
                     launch_url = config["private_server"]
                 else:
@@ -272,21 +283,26 @@ def launch_game(config, device):
                 device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
                 time.sleep(5)
                 
-                # Bring to foreground
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-                time.sleep(2)
+                time.sleep(5)
 
-                # Verification
                 for i in range(config['launch_delay'] // 5):
                     time.sleep(5)
+                    activity = get_current_activity(device)
                     if is_game_joined(device, config["game_id"], config["private_server"]):
                         print_formatted("SUCCESS", "Successfully joined game")
                         return True
+                    elif is_in_error_state(activity):
+                        print_formatted("WARNING", "Detected white screen or error state, retrying...")
+                        break
                     
-                    if i % 2 == 0 and is_rooted:
-                        device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
+                    if i % 2 == 0 and is_rooted and get_roblox_process_count(device) > 1:
+                        print_formatted("WARNING", "Multiple instances detected, forcing close...")
+                        close_roblox(device, is_rooted, config)
+                        break
 
                 print_formatted("WARNING", f"Attempt {attempt + 1} failed, retrying...")
+                prepare_roblox(device, config)
                 
             except Exception as e:
                 print_formatted("ERROR", f"Launch attempt {attempt + 1} error: {e}")
@@ -474,7 +490,7 @@ def set_check_method(config, device):
 
 def set_launch_delay(config, device):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 60):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 70):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -487,7 +503,7 @@ def set_launch_delay(config, device):
 
 def set_retry_delay(config, device):
     try:
-        print_formatted("INFO", "Enter retry delay (seconds, min 5, default 10):")
+        print_formatted("INFO", "Enter retry delay (seconds, min 5, default 15):")
         delay = int(input("> ").strip())
         if delay < 5:
             print_formatted("ERROR", "Minimum delay is 5 seconds")
@@ -527,7 +543,7 @@ def is_executor_running(device):
 
 def is_account_logged_in(device, user_id):
     try:
-        device.shell("logcat -c")  # Clear logs
+        device.shell("logcat -c")
         time.sleep(1)
         output = device.shell(f"logcat -d -t 200 | grep -i 'user.*id.*{user_id}'")
         return user_id in output
@@ -655,7 +671,7 @@ def show_menu(config, device):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.7
+       Koala Hub Auto-Rejoin v4.8
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -664,7 +680,7 @@ def show_menu(config, device):
 {COLORS['CYAN']}• Check Delay: {config['check_delay']}s
 {COLORS['CYAN']}• Check Method: {config['check_method']}
 {COLORS['CYAN']}• Launch Delay: {config['launch_delay']}s
-{COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 10)}s
+{COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 15)}s
 {COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
 {COLORS['CYAN']}• Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
 {COLORS['CYAN']}• Launch Attempts: {config.get('launch_attempts', 3)}
@@ -723,10 +739,10 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.7
+       Koala Hub Auto-Rejoin v4.8
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-• Reliable Roblox launching with multiple attempts
+• Reliable single-instance Roblox launching
 • Advanced crash protection system
 • Smart game detection and rejoin logic
 • Root-optimized for best performance

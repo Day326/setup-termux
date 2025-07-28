@@ -54,14 +54,14 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 20  # New: Delay after launch in seconds
+        "launch_delay": 30,  # Increased to 30s
+        "retry_delay": 10   # New: Delay between retries in seconds
     }
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
-                # Remove auto_clear_cache if present
-                config.pop("auto_clear_cache", None)
+                config.pop("auto_clear_cache", None)  # Ensure no cache setting remains
                 return config
         print_formatted("INFO", "Creating new config file...")
         return default_config
@@ -161,8 +161,6 @@ def prepare_roblox(device, config):
     try:
         print_formatted("INFO", "Preparing Roblox for launch...")
         close_roblox(device)
-        device.shell("pm reset-permissions com.roblox.client")
-        time.sleep(1)
         return True
     except Exception as e:
         print_formatted("ERROR", f"Preparation error: {e}")
@@ -170,18 +168,12 @@ def prepare_roblox(device, config):
 
 def launch_game(config, device):
     try:
-        # Launch Roblox app directly
+        # Launch Roblox app directly without deep links
         launch_cmd = f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher"
         print_formatted("INFO", "Launching Roblox app...")
         device.shell(launch_cmd)
 
-        # Simulate tap to join game (adjust coordinates based on your device/emulator)
-        join_x, join_y = 540, 960  # Example coordinates for center of screen (1080x1920)
-        time.sleep(2)  # Wait for app to open
-        device.shell(f"input tap {join_x} {join_y}")
-        print_formatted("INFO", f"Simulated tap at ({join_x}, {join_y}) to join game")
-
-        # Wait and verify with configurable delay
+        # Wait with configurable delay and verify
         print_formatted("INFO", f"Waiting {config['launch_delay']} seconds for game to load...")
         for i in range(config['launch_delay']):
             time.sleep(1)
@@ -191,7 +183,7 @@ def launch_game(config, device):
             if i % 5 == 0:
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher")
 
-        print_formatted("WARNING", "Game launch timed out")
+        print_formatted("WARNING", "Game launch timed out. Please join manually or adjust coordinates.")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
@@ -378,7 +370,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 20):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 30):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -386,6 +378,19 @@ def set_launch_delay(config):
         config["launch_delay"] = delay
         save_config(config)
         print_formatted("SUCCESS", f"Launch delay set to {delay}s")
+    except ValueError:
+        print_formatted("ERROR", "Please enter a number")
+
+def set_retry_delay(config):
+    try:
+        print_formatted("INFO", "Enter retry delay (seconds, min 5, default 10):")
+        delay = int(input("> ").strip())
+        if delay < 5:
+            print_formatted("ERROR", "Minimum delay is 5 seconds")
+            return
+        config["retry_delay"] = delay
+        save_config(config)
+        print_formatted("SUCCESS", f"Retry delay set to {delay}s")
     except ValueError:
         print_formatted("ERROR", "Please enter a number")
 
@@ -456,7 +461,7 @@ def auto_rejoin(config):
     if not device:
         return
     print_formatted("INFO", f"Starting auto-rejoin for {config['active_account']}")
-    print_formatted("INFO", "Press Ctrl+C to stop")
+    print_formatted("INFO", "Press Ctrl+C to stop. Note: Join game manually if auto-join fails.")
     try:
         retry_count = 0
         max_retries = config.get("max_retries", 3)
@@ -480,8 +485,8 @@ def auto_rejoin(config):
                     retry_count = 0
                     print_formatted("SUCCESS", "Roblox is running and in game")
                 if retry_count >= max_retries:
-                    print_formatted("ERROR", f"Max retries ({max_retries}) reached. Waiting...")
-                    time.sleep(30)
+                    print_formatted("ERROR", f"Max retries ({max_retries}) reached. Waiting {config['retry_delay']}s...")
+                    time.sleep(config["retry_delay"])
                     retry_count = 0
                     continue
                 for i in range(config["check_delay"]):
@@ -491,7 +496,7 @@ def auto_rejoin(config):
                 print("\r" + " " * 50 + "\r", end="")
             except Exception as e:
                 print_formatted("ERROR", f"Rejoin error: {e}")
-                time.sleep(5)
+                time.sleep(config["retry_delay"])
                 retry_count += 1
     except KeyboardInterrupt:
         print_formatted("INFO", "Auto-rejoin stopped")
@@ -505,7 +510,7 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.1
+       Koala Hub Auto-Rejoin v4.2
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -514,6 +519,7 @@ def show_menu(config):
 {COLORS['CYAN']}• Check Delay: {config['check_delay']}s
 {COLORS['CYAN']}• Check Method: {config['check_method']}
 {COLORS['CYAN']}• Launch Delay: {config['launch_delay']}s
+{COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 10)}s
 {COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
 
 {COLORS['BOLD']}Menu Options:{COLORS['RESET']}
@@ -524,11 +530,12 @@ def show_menu(config):
 {COLORS['CYAN']}5:{COLORS['RESET']} Set Check Delay
 {COLORS['CYAN']}6:{COLORS['RESET']} Set Check Method
 {COLORS['CYAN']}7:{COLORS['RESET']} Set Launch Delay
-{COLORS['CYAN']}8:{COLORS['RESET']} Toggle Game Validation
-{COLORS['CYAN']}9:{COLORS['RESET']} Check Status
-{COLORS['CYAN']}10:{COLORS['RESET']} Start Auto-Rejoin
-{COLORS['CYAN']}11:{COLORS['RESET']} Delete Game ID/Server
-{COLORS['CYAN']}12:{COLORS['RESET']} Exit
+{COLORS['CYAN']}8:{COLORS['RESET']} Set Retry Delay
+{COLORS['CYAN']}9:{COLORS['RESET']} Toggle Game Validation
+{COLORS['CYAN']}10:{COLORS['RESET']} Check Status
+{COLORS['CYAN']}11:{COLORS['RESET']} Start Auto-Rejoin
+{COLORS['CYAN']}12:{COLORS['RESET']} Delete Game ID/Server
+{COLORS['CYAN']}13:{COLORS['RESET']} Exit
 """)
         choice = input(f"{COLORS['CYAN']}> {COLORS['RESET']}").strip()
         if choice == "1":
@@ -546,14 +553,16 @@ def show_menu(config):
         elif choice == "7":
             set_launch_delay(config)
         elif choice == "8":
-            toggle_game_validation(config)
+            set_retry_delay(config)
         elif choice == "9":
-            check_status(config)
+            toggle_game_validation(config)
         elif choice == "10":
-            auto_rejoin(config)
+            check_status(config)
         elif choice == "11":
-            delete_game_settings(config)
+            auto_rejoin(config)
         elif choice == "12":
+            delete_game_settings(config)
+        elif choice == "13":
             print_formatted("INFO", "Exiting...")
             break
         else:
@@ -564,13 +573,13 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.1
+       Koala Hub Auto-Rejoin v4.2
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-• Improved launch method to avoid crashes
+• Gentler launch to reduce crashes
 • Removed cache clearing to preserve login
-• Configurable launch delay
-• Stable auto-rejoin for Discord release
+• Configurable launch and retry delays
+• Manual join option for stability
 """)
     device = check_adb()
     if not device:

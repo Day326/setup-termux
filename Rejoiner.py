@@ -57,8 +57,8 @@ def load_config():
         "launch_delay": 40,
         "retry_delay": 10,
         "force_kill_delay": 5,
-        "gentle_launch": True,
-        "minimize_crashes": True
+        "minimize_crashes": True,
+        "launch_attempts": 3
     }
     try:
         if os.path.exists(CONFIG_FILE):
@@ -142,14 +142,21 @@ def is_in_error_state(activity):
     return "ErrorActivity" in activity or "CrashActivity" in activity
 
 def detect_main_activity(device):
-    try:
-        cmd = f"cmd package resolve-activity --brief {ROBLOX_PACKAGE} | tail -n 1"
-        activity = device.shell(cmd).strip()
-        if activity and "/" in activity:
-            return activity.split("/")[1]
-        return "com.roblox.client.StartupActivity"
-    except:
-        return "com.roblox.client.StartupActivity"
+    activities = [
+        "com.roblox.client.StartupActivity",
+        "com.roblox.client.MainActivity",
+        "com.roblox.client.HomeActivity"
+    ]
+    
+    for activity in activities:
+        try:
+            result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{activity}")
+            if "Error" not in result:
+                return activity
+        except:
+            continue
+    
+    return "com.roblox.client.StartupActivity"
 
 def is_game_joined(device, game_id, private_server):
     try:
@@ -204,7 +211,6 @@ def close_roblox(device, is_rooted, config=None):
                 device.shell("su -c 'am force-stop com.roblox.client'")
                 time.sleep(config.get("force_kill_delay", 3))
         
-        # Verify closed
         if is_roblox_running(device):
             print_formatted("WARNING", "Roblox still running, trying alternative close...")
             device.shell("am kill com.roblox.client")
@@ -235,50 +241,51 @@ def launch_game(config, device):
         is_rooted = is_root_available()
         main_activity = detect_main_activity(device)
         
-        if config.get("minimize_crashes", True):
-            print_formatted("INFO", "Using crash-resistant launch method...")
+        for attempt in range(config.get("launch_attempts", 3)):
+            print_formatted("INFO", f"Launch attempt {attempt + 1} of {config.get('launch_attempts', 3)}")
             
-            # Step 1: Launch Roblox gently
-            device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-            time.sleep(5)
-            
-            # Step 2: Clear any pending dialogs
-            device.shell("input keyevent BACK")
-            time.sleep(1)
-            
-            # Step 3: Join game
-            if config["private_server"]:
-                launch_url = config["private_server"]
-            else:
-                launch_url = f"roblox://placeID={config['game_id']}"
-            
-            device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
-            time.sleep(3)
-            
-            # Step 4: Ensure app is in foreground
-            device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-        else:
-            # Original direct launch method
-            if config["private_server"]:
-                launch_url = config["private_server"]
-            else:
-                launch_url = f"roblox://placeID={config['game_id']}"
-            
-            device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
-
-        # Verification loop
-        print_formatted("INFO", f"Waiting {config['launch_delay']} seconds for game to load...")
-        for i in range(config['launch_delay']):
-            time.sleep(1)
-            if is_game_joined(device, config["game_id"], config["private_server"]):
-                print_formatted("SUCCESS", "Successfully joined game")
-                return True
-            
-            if i % 5 == 0 and is_rooted:
+            try:
+                # Step 1: Launch Roblox
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
+                time.sleep(5)
+                
+                # Step 2: Clear any dialogs
+                device.shell("input keyevent BACK")
+                time.sleep(1)
+                
+                # Step 3: Join game
+                if config["private_server"]:
+                    launch_url = config["private_server"]
+                else:
+                    launch_url = f"roblox://placeID={config['game_id']}"
+                
+                device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
+                time.sleep(3)
+                
+                # Step 4: Bring to foreground
+                device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
+                time.sleep(2)
 
-        print_formatted("WARNING", "Game launch timed out")
+                # Verification
+                for i in range(config['launch_delay'] // 3):
+                    time.sleep(3)
+                    if is_game_joined(device, config["game_id"], config["private_server"]):
+                        print_formatted("SUCCESS", "Successfully joined game")
+                        return True
+                    
+                    if i % 2 == 0 and is_rooted:
+                        device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
+
+                print_formatted("WARNING", f"Attempt {attempt + 1} failed, retrying...")
+                prepare_roblox(device, config)
+                
+            except Exception as e:
+                print_formatted("ERROR", f"Launch attempt {attempt + 1} error: {e}")
+                prepare_roblox(device, config)
+
+        print_formatted("ERROR", "All launch attempts failed")
         return False
+        
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
         return False
@@ -645,7 +652,7 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.5
+       Koala Hub Auto-Rejoin v4.6
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -657,6 +664,7 @@ def show_menu(config):
 {COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 10)}s
 {COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
 {COLORS['CYAN']}• Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
+{COLORS['CYAN']}• Launch Attempts: {config.get('launch_attempts', 3)}
 
 {COLORS['BOLD']}Menu Options:{COLORS['RESET']}
 {COLORS['CYAN']}1:{COLORS['RESET']} Add Account
@@ -712,12 +720,12 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.5
+       Koala Hub Auto-Rejoin v4.6
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
+• Reliable Roblox launching with multiple attempts
 • Advanced crash protection system
 • Smart game detection and rejoin logic
-• Configurable delays and retries
 • Root-optimized for best performance
 """)
     device = check_adb()

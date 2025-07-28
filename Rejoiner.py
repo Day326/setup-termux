@@ -54,14 +54,14 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 30,  # Increased to 30s
-        "retry_delay": 10   # New: Delay between retries in seconds
+        "launch_delay": 40,  # Increased to 40s
+        "retry_delay": 10
     }
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
-                config.pop("auto_clear_cache", None)  # Ensure no cache setting remains
+                config.pop("auto_clear_cache", None)
                 return config
         print_formatted("INFO", "Creating new config file...")
         return default_config
@@ -142,12 +142,13 @@ def is_game_joined(device, game_id, private_server):
         print_formatted("ERROR", f"Game detection error: {e}")
         return False
 
-def close_roblox(device):
+def close_roblox(device, is_rooted):
     try:
-        if is_root_available():
+        if is_rooted:
             device.shell("su -c 'am force-stop com.roblox.client'")
+            print_formatted("INFO", "Roblox force-stopped with root")
         else:
-            device.shell("am force-stop com.roblox.client")
+            print_formatted("WARNING", "Root not available, skipping Roblox close")
         time.sleep(3)
         return True
     except Exception as e:
@@ -160,7 +161,8 @@ def close_roblox(device):
 def prepare_roblox(device, config):
     try:
         print_formatted("INFO", "Preparing Roblox for launch...")
-        close_roblox(device)
+        is_rooted = is_root_available()
+        close_roblox(device, is_rooted)
         return True
     except Exception as e:
         print_formatted("ERROR", f"Preparation error: {e}")
@@ -168,10 +170,16 @@ def prepare_roblox(device, config):
 
 def launch_game(config, device):
     try:
-        # Launch Roblox app directly without deep links
+        is_rooted = is_root_available()
+        # Launch Roblox app directly
         launch_cmd = f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher"
         print_formatted("INFO", "Launching Roblox app...")
-        device.shell(launch_cmd)
+        result = device.shell(launch_cmd)
+        if "Error" not in result:
+            print_formatted("SUCCESS", "Roblox launch command executed")
+        else:
+            print_formatted("ERROR", f"Launch command failed: {result}")
+            return False
 
         # Wait with configurable delay and verify
         print_formatted("INFO", f"Waiting {config['launch_delay']} seconds for game to load...")
@@ -180,10 +188,10 @@ def launch_game(config, device):
             if is_game_joined(device, config["game_id"], config["private_server"]):
                 print_formatted("SUCCESS", "Successfully joined game")
                 return True
-            if i % 5 == 0:
+            if i % 5 == 0 and is_rooted:
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/com.roblox.client.ActivityLauncher")
 
-        print_formatted("WARNING", "Game launch timed out. Please join manually or adjust coordinates.")
+        print_formatted("WARNING", "Game launch timed out. Root required for full functionality.")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
@@ -370,7 +378,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 30):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 40):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -449,7 +457,7 @@ def is_account_logged_in(device, user_id):
 # ======================
 def auto_rejoin(config):
     if not is_root_available():
-        print_formatted("ERROR", "Root access required for auto-rejoin")
+        print_formatted("ERROR", "Root access required for auto-rejoin. This script is designed for rooted devices only.")
         return
     if not config["active_account"]:
         print_formatted("ERROR", "No active account selected")
@@ -500,7 +508,7 @@ def auto_rejoin(config):
                 retry_count += 1
     except KeyboardInterrupt:
         print_formatted("INFO", "Auto-rejoin stopped")
-        close_roblox(device)
+        close_roblox(device, True)  # Force close with root on exit
 
 # ======================
 # MAIN MENU
@@ -510,7 +518,7 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.2
+       Koala Hub Auto-Rejoin v4.3
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -573,11 +581,11 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.2
+       Koala Hub Auto-Rejoin v4.3
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
+• Root-only operation for full auto-rejoin
 • Gentler launch to reduce crashes
-• Removed cache clearing to preserve login
 • Configurable launch and retry delays
 • Manual join option for stability
 """)

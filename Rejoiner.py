@@ -124,12 +124,17 @@ def verify_roblox_installation(device):
     try:
         output = device.shell(f"pm list packages {ROBLOX_PACKAGE}")
         if ROBLOX_PACKAGE not in output:
-            print_formatted("ERROR", "Roblox is not installed on the device")
+            print_formatted("ERROR", "Roblox is not installed. Please install from Google Play or a trusted APK source.")
             return False
-        # Verify main activity exists
+        # Verify main activity
         main_activity = detect_main_activity(device)
         if not main_activity:
-            print_formatted("ERROR", "No valid main activity found for Roblox")
+            print_formatted("ERROR", "No valid main activity found for Roblox. Try reinstalling the app.")
+            try:
+                pkg_info = device.shell(f"pm dump {ROBLOX_PACKAGE} | grep version")
+                print_formatted("INFO", f"Package info: {pkg_info.strip()}")
+            except:
+                print_formatted("WARNING", "Could not retrieve package info")
             return False
         return True
     except Exception as e:
@@ -139,11 +144,9 @@ def verify_roblox_installation(device):
 def is_roblox_running(device):
     global roblox_process_count
     try:
-        # Check running processes
         output = device.shell(f"ps -A | grep {ROBLOX_PACKAGE} | grep -v grep")
         process_running = bool(output.strip())
         
-        # Verify with activity manager
         activity_output = device.shell(f"dumpsys activity | grep {ROBLOX_PACKAGE}")
         activity_running = ROBLOX_PACKAGE in activity_output and "mResumedActivity" in activity_output
         
@@ -176,37 +179,71 @@ def is_in_error_state(activity):
 
 def detect_main_activity(device):
     try:
-        # Query package manager for main activity
+        # Method 1: Query package manager
         output = device.shell(f"pm dump {ROBLOX_PACKAGE} | grep -A 10 'android.intent.action.MAIN'")
         lines = output.splitlines()
         for line in lines:
             if "com.roblox.client" in line and "Activity" in line:
                 activity = line.strip().split()[-1]
                 if activity.startswith("com.roblox.client"):
-                    print_formatted("INFO", f"Detected main activity: {activity}")
+                    print_formatted("INFO", f"Detected main activity via pm dump: {activity}")
                     return activity.replace(ROBLOX_PACKAGE + "/", "")
     except Exception as e:
-        print_formatted("WARNING", f"Package manager query failed: {e}")
+        print_formatted("WARNING", f"pm dump query failed: {e}")
     
-    # Fallback to known activities
+    try:
+        # Method 2: Query dumpsys package
+        output = device.shell(f"dumpsys package {ROBLOX_PACKAGE} | grep -A 10 'android.intent.action.MAIN'")
+        lines = output.splitlines()
+        for line in lines:
+            if "com.roblox.client" in line and "Activity" in line:
+                activity = line.strip().split()[-1]
+                if activity.startswith("com.roblox.client"):
+                    print_formatted("INFO", f"Detected main activity via dumpsys: {activity}")
+                    return activity.replace(ROBLOX_PACKAGE + "/", "")
+    except Exception as e:
+        print_formatted("WARNING", f"dumpsys package query failed: {e}")
+    
+    # Method 3: Fallback to known activities
     known_activities = [
         "com.roblox.client.MainActivity",
         "com.roblox.client.HomeActivity",
         "com.roblox.client.LauncherActivity",
-        "com.roblox.client.RobloxActivity"
+        "com.roblox.client.RobloxActivity",
+        "com.roblox.client.AppActivity",
+        "com.roblox.client.StartActivity"
     ]
     for activity in known_activities:
         try:
+            print_formatted("INFO", f"Trying fallback activity: {activity}")
             result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{activity.split('/')[-1]} --activity-single-top")
             if "Error" not in result:
-                time.sleep(2)
+                time.sleep(3)
                 if is_roblox_running(device):
-                    print_formatted("INFO", f"Fallback activity worked: {activity}")
+                    print_formatted("SUCCESS", f"Fallback activity worked: {activity}")
                     return activity.split("/")[-1]
+            else:
+                print_formatted("WARNING", f"Activity {activity} failed: {result}")
         except Exception as e:
             print_formatted("WARNING", f"Failed to try activity {activity}: {e}")
     
-    print_formatted("ERROR", "No valid main activity found")
+    # Method 4: Generic intent
+    try:
+        print_formatted("INFO", "Trying generic launcher intent")
+        result = device.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/.MainActivity")
+        if "Error" not in result:
+            time.sleep(3)
+            if is_roblox_running(device):
+                print_formatted("SUCCESS", "Generic launcher intent worked")
+                return "MainActivity"  # Assume MainActivity for consistency
+            else:
+                print_formatted("WARNING", "Generic intent launched but Roblox not running")
+        else:
+            print_formatted("WARNING", f"Generic intent failed: {result}")
+    except Exception as e:
+        print_formatted("WARNING", f"Generic intent failed: {e}")
+    
+    print_formatted("ERROR", "No valid main activity found after all attempts")
     return None
 
 def close_roblox(device, is_rooted, config=None):
@@ -230,11 +267,12 @@ def close_roblox(device, is_rooted, config=None):
                 device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
             time.sleep(3)
         
-        # Step 3: Final verification
-        for _ in range(2):
+        # Step 3: Clear cache and verify
+        for _ in range(3):
             if is_roblox_running(device):
-                print_formatted("WARNING", "Clearing Roblox data as final resort...")
+                print_formatted("WARNING", "Clearing Roblox data and cache...")
                 device.shell(f"pm clear {ROBLOX_PACKAGE}")
+                device.shell(f"rm -rf /data/data/{ROBLOX_PACKAGE}/cache/*")
                 time.sleep(5)
         
         if is_roblox_running(device):
@@ -254,7 +292,6 @@ def prepare_roblox(device, config):
         print_formatted("INFO", "Preparing Roblox for launch...")
         is_rooted = is_root_available()
         
-        # Ensure all processes are terminated
         for _ in range(3):
             if is_roblox_running(device):
                 if not close_roblox(device, is_rooted, config):
@@ -320,29 +357,34 @@ def launch_game(config, device):
     try:
         is_rooted = is_root_available()
         main_activity = detect_main_activity(device)
-        if not main_activity:
-            print_formatted("ERROR", "Cannot launch Roblox: no valid main activity found")
-            return False
         
         for attempt in range(config.get("launch_attempts", 3)):
             print_formatted("INFO", f"Launch attempt {attempt + 1} of {config.get('launch_attempts', 3)}")
             
-            # Step 1: Prepare
             if not prepare_roblox(device, config):
                 print_formatted("WARNING", "Failed to prepare Roblox, retrying...")
                 time.sleep(config.get("retry_delay", 15))
                 continue
             
-            # Step 2: Launch main activity
-            print_formatted("INFO", f"Launching Roblox main activity: {main_activity}")
-            result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity} --activity-single-top")
-            if "Error" in result:
-                print_formatted("ERROR", f"Failed to launch Roblox: {result}")
-                time.sleep(config.get("retry_delay", 15))
-                continue
+            # Try specific activity if found
+            if main_activity:
+                print_formatted("INFO", f"Launching Roblox with activity: {main_activity}")
+                result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity} --activity-single-top")
+                if "Error" in result:
+                    print_formatted("ERROR", f"Failed to launch Roblox: {result}")
+                    time.sleep(config.get("retry_delay", 15))
+                    continue
+            else:
+                # Fallback to generic intent
+                print_formatted("INFO", "No specific activity found, trying generic launcher intent")
+                result = device.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/.MainActivity")
+                if "Error" in result:
+                    print_formatted("ERROR", f"Generic intent failed: {result}")
+                    time.sleep(config.get("retry_delay", 15))
+                    continue
             
             roblox_process_count = 1
-            time.sleep(20)  # Increased wait for stability
+            time.sleep(25)  # Increased wait for stability
             
             if not is_roblox_running(device):
                 print_formatted("ERROR", "Roblox failed to start")
@@ -350,11 +392,9 @@ def launch_game(config, device):
                 time.sleep(config.get("retry_delay", 15))
                 continue
             
-            # Step 3: Clear dialogs
             device.shell("input keyevent BACK")
             time.sleep(1)
             
-            # Step 4: Join game
             if config["private_server"]:
                 launch_url = config["private_server"]
             else:
@@ -367,7 +407,6 @@ def launch_game(config, device):
                 time.sleep(config.get("retry_delay", 15))
                 continue
             
-            # Step 5: Wait for game
             loaded = False
             for i in range(config['launch_delay'] // 5):
                 time.sleep(5)
@@ -841,7 +880,7 @@ def main():
        Koala Hub Auto-Rejoin v4.7
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-• Dynamic activity detection
+• Enhanced activity detection
 • Robust process management
 • Accurate game detection
 • Root-optimized performance

@@ -4,7 +4,6 @@ import os
 import json
 import subprocess
 from datetime import datetime
-from ppadb.client import Client as AdbClient
 from prettytable import PrettyTable
 
 # ======================
@@ -22,8 +21,6 @@ COLORS = {
 
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
-ADB_PORT = 5037
-ADB_HOST = "127.0.0.1"
 
 # ======================
 # CORE FUNCTIONS
@@ -44,6 +41,19 @@ def is_root_available():
     except:
         return False
 
+def run_shell_command(command):
+    try:
+        if is_root_available():
+            result = subprocess.run(f"su -c '{command}'", shell=True, 
+                                 capture_output=True, text=True)
+        else:
+            result = subprocess.run(command, shell=True,
+                                 capture_output=True, text=True)
+        return result.stdout.strip()
+    except Exception as e:
+        print_formatted("ERROR", f"Command failed: {command} - {str(e)}")
+        return ""
+
 def load_config():
     default_config = {
         "accounts": [],
@@ -58,86 +68,52 @@ def load_config():
         "retry_delay": 15,
         "force_kill_delay": 7,
         "minimize_crashes": True,
-        "launch_attempts": 3,
         "cooldown_period": 120
     }
     try:
-        device = check_adb()
-        if device:
-            device.shell(f"touch {CONFIG_FILE}")
-            output = device.shell(f"cat {CONFIG_FILE}")
-            if output.strip():
-                config = json.loads(output)
-                return {**default_config, **config}
+        if not os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(default_config, f)
             print_formatted("INFO", "Creating new config file...")
-            save_config(default_config, device)
             return default_config
-        else:
-            print_formatted("ERROR", "No device connected for config load")
-            return default_config
+        
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+            return {**default_config, **config}
     except Exception as e:
         print_formatted("ERROR", f"Config load error: {e}")
         return default_config
 
-def save_config(config, device):
+def save_config(config):
     try:
-        temp_file = "/sdcard/temp_config.json"
-        with open(temp_file, 'w') as f:
+        with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=4)
-        device.push(temp_file, CONFIG_FILE)
-        os.remove(temp_file)
         print_formatted("SUCCESS", "Config saved")
     except Exception as e:
         print_formatted("ERROR", f"Config save error: {e}")
 
 # ======================
-# ADB FUNCTIONS
-# ======================
-def check_adb():
-    try:
-        adb = AdbClient(host=ADB_HOST, port=ADB_PORT)
-        devices = adb.devices()
-        if not devices:
-            print_formatted("WARNING", "No devices found. Restarting ADB...")
-            os.system("adb kill-server")
-            os.system("adb start-server")
-            time.sleep(3)
-            devices = adb.devices()
-        if devices:
-            device = devices[0]
-            print_formatted("SUCCESS", f"Connected to {device.serial}")
-            return device
-        print_formatted("ERROR", "No ADB devices available")
-        return None
-    except Exception as e:
-        print_formatted("ERROR", f"ADB connection failed: {e}")
-        return None
-
-# ======================
 # ROBLOX CONTROL FUNCTIONS
 # ======================
-def verify_roblox_installation(device):
+def verify_roblox_installation():
     try:
-        output = device.shell(f"pm list packages {ROBLOX_PACKAGE}")
-        if ROBLOX_PACKAGE not in output:
-            print_formatted("ERROR", "Roblox is not installed on the device")
-            return False
-        return True
+        output = run_shell_command(f"pm list packages {ROBLOX_PACKAGE}")
+        return ROBLOX_PACKAGE in output
     except Exception as e:
         print_formatted("ERROR", f"Installation check error: {e}")
         return False
 
-def is_roblox_running(device):
+def is_roblox_running():
     try:
-        proc = device.shell(f"ps -A | grep {ROBLOX_PACKAGE}").strip()
-        return bool(proc)
+        output = run_shell_command(f"ps -A | grep {ROBLOX_PACKAGE}")
+        return bool(output.strip())
     except Exception as e:
         print_formatted("ERROR", f"Process check error: {e}")
         return False
 
-def get_current_activity(device):
+def get_current_activity():
     try:
-        output = device.shell("dumpsys window windows | grep mCurrentFocus")
+        output = run_shell_command("dumpsys window windows | grep mCurrentFocus")
         return output.strip()
     except Exception as e:
         print_formatted("ERROR", f"Activity check error: {e}")
@@ -150,48 +126,49 @@ def is_in_main_menu(activity):
     return "MainActivity" in activity or "HomeActivity" in activity
 
 def is_in_error_state(activity):
-    return "ErrorActivity" in activity or "CrashActivity" in activity
+    error_states = ["ErrorActivity", "CrashActivity", "NotResponding", "ANR"]
+    return any(state in activity for state in error_states)
 
-def detect_main_activity(device):
+def detect_main_activity():
     activities = [
         "com.roblox.client.StartupActivity",
         "com.roblox.client.MainActivity",
-        "com.roblox.client.HomeActivity",
-        "com.roblox.client.LauncherActivity"
+        "com.roblox.client.HomeActivity"
     ]
     for activity in activities:
         try:
-            result = device.shell(f"am start -n {ROBLOX_PACKAGE}/{activity}")
+            result = run_shell_command(f"am start -n {ROBLOX_PACKAGE}/{activity}")
             if "Error" not in result:
                 time.sleep(2)
-                if is_roblox_running(device):
+                if is_roblox_running():
                     return activity
         except:
             continue
     return activities[0]
 
-def close_roblox(device, is_rooted, config=None):
+def close_roblox(config=None):
     try:
-        # First try the safe method
-        if config.get("minimize_crashes", True):
-            print_formatted("INFO", "Using safe close method...")
-            device.shell("input keyevent HOME")
-            time.sleep(1)
-            device.shell(f"am force-stop {ROBLOX_PACKAGE}")
-            time.sleep(config.get("force_kill_delay", 7))
+        is_rooted = is_root_available()
+        print_formatted("INFO", "Closing Roblox...")
         
-        # More aggressive killing if needed
-        if is_roblox_running(device):
-            print_formatted("WARNING", "Roblox still running, trying alternative close...")
-            # Kill all Roblox processes
-            device.shell(f"am kill {ROBLOX_PACKAGE}")
-            device.shell(f"pkill -f {ROBLOX_PACKAGE}")
+        run_shell_command("input keyevent HOME")
+        time.sleep(1)
+        run_shell_command(f"am force-stop {ROBLOX_PACKAGE}")
+        time.sleep(config.get("force_kill_delay", 7) if config else 7)
+        
+        if is_roblox_running():
+            print_formatted("WARNING", "Roblox still running, using advanced kill methods...")
+            run_shell_command(f"am kill {ROBLOX_PACKAGE}")
+            run_shell_command(f"pkill -f {ROBLOX_PACKAGE}")
+            
             if is_rooted:
-                device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
-            time.sleep(2)
+                run_shell_command("am force-stop com.roblox.client")
+                run_shell_command("pkill -9 -f com.roblox.client")
+            
+            run_shell_command(f"pm clear {ROBLOX_PACKAGE}")
+            time.sleep(5)
         
-        # Final check and cleanup
-        if is_roblox_running(device):
+        if is_roblox_running():
             print_formatted("ERROR", "Failed to fully close Roblox")
             return False
             
@@ -200,23 +177,14 @@ def close_roblox(device, is_rooted, config=None):
         print_formatted("ERROR", f"Failed to close Roblox: {e}")
         return False
 
-def prepare_roblox(device, config):
+def prepare_roblox(config):
     try:
         print_formatted("INFO", "Preparing Roblox for launch...")
-        is_rooted = is_root_available()
-        
-        # Kill all Roblox processes aggressively
-        device.shell(f"pkill -f {ROBLOX_PACKAGE}")
-        if is_rooted:
-            device.shell(f"su -c 'pkill -9 -f {ROBLOX_PACKAGE}'")
-        time.sleep(2)
-        
-        # Clear app data if still having issues
-        if is_roblox_running(device):
-            print_formatted("WARNING", "Force clearing Roblox data")
-            device.shell(f"pm clear {ROBLOX_PACKAGE}")
-            time.sleep(3)
+        if not close_roblox(config):
+            return False
             
+        run_shell_command(f"pm clear {ROBLOX_PACKAGE}")
+        time.sleep(3)
         return True
     except Exception as e:
         print_formatted("ERROR", f"Preparation error: {e}")
@@ -225,112 +193,77 @@ def prepare_roblox(device, config):
 # ======================
 # GAME LAUNCH FUNCTIONS
 # ======================
-def is_game_joined(device, game_id, private_server):
+def is_game_joined(game_id, private_server):
     try:
-        # Clear logcat to avoid stale data
-        device.shell("logcat -c")
-        time.sleep(1)
-
-        patterns = [
-            f"place[._]?id.*{game_id}",
-            f"game[._]?id.*{game_id}",
-            f"joining.*{game_id}",
-            f"placeId={game_id}"
-        ]
-        if private_server:
-            if "privateServerLinkCode=" in private_server:
-                code = private_server.split("privateServerLinkCode=")[1].split("&")[0]
-            else:
-                code = private_server.split("share?code=")[1].split("&")[0]
-            patterns.append(f"linkCode={code}")
-
-        # Check logs
-        log_cmd = f"logcat -d -t 200 | grep -iE '{'|'.join(patterns)}'"
-        logs = device.shell(log_cmd)
-        if logs.strip():
-            print_formatted("INFO", "Game join confirmed via logs")
-            return True
-
-        # Check activity
-        activity = get_current_activity(device)
+        activity = get_current_activity()
         if ROBLOX_PACKAGE in activity and is_in_game_activity(activity):
             print_formatted("INFO", "Game join confirmed via activity")
             return True
             
-        # Additional check for game process
-        output = device.shell("dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp'")
-        if "SurfaceView" in output and ROBLOX_PACKAGE in output:
-            print_formatted("INFO", "Game join confirmed via window focus")
+        run_shell_command("logcat -c")
+        time.sleep(1)
+        
+        patterns = [f"place[._]?id.*{game_id}", f"game[._]?id.*{game_id}"]
+        if private_server:
+            code = private_server.split("privateServerLinkCode=")[-1].split("&")[0] if "privateServerLinkCode=" in private_server else private_server.split("share?code=")[-1].split("&")[0]
+            patterns.append(f"linkCode={code}")
+        
+        logs = run_shell_command(f"logcat -d -t 200 | grep -iE '{'|'.join(patterns)}'")
+        if logs.strip():
+            print_formatted("INFO", "Game join confirmed via logs")
             return True
 
+        if is_in_error_state(activity):
+            print_formatted("ERROR", "Roblox crashed/frozen")
+            return False
+            
         return False
     except Exception as e:
         print_formatted("ERROR", f"Game detection error: {e}")
         return False
 
-def launch_game(config, device):
+def launch_game(config):
     try:
-        is_rooted = is_root_available()
-        main_activity = detect_main_activity(device)
-        
-        for attempt in range(config.get("launch_attempts", 3)):
-            print_formatted("INFO", f"Launch attempt {attempt + 1} of {config.get('launch_attempts', 3)}")
+        if not prepare_roblox(config):
+            return False
             
-            try:
-                # Ensure Roblox is fully closed
-                if not close_roblox(device, is_rooted, config):
-                    print_formatted("WARNING", "Failed to close Roblox properly, retrying...")
-                    continue
-                    
-                time.sleep(2)
-
-                # Launch Roblox main activity
-                device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-                time.sleep(10)  # Wait for initial load
+        main_activity = detect_main_activity()
+        
+        print_formatted("INFO", "Launching Roblox...")
+        run_shell_command(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
+        time.sleep(10)
+        
+        run_shell_command("input keyevent BACK")
+        time.sleep(2)
+        
+        if config["private_server"]:
+            launch_url = config["private_server"]
+            print_formatted("INFO", f"Joining private server: {launch_url}")
+        else:
+            launch_url = f"roblox://placeID={config['game_id']}"
+            print_formatted("INFO", f"Joining game ID: {config['game_id']}")
+        
+        run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
+        
+        loaded = False
+        for i in range(config['launch_delay'] // 5):
+            time.sleep(5)
+            
+            activity = get_current_activity()
+            if is_in_error_state(activity):
+                print_formatted("ERROR", "Detected crash/error activity")
+                return False
                 
-                # Clear any dialogs
-                device.shell("input keyevent BACK")
-                time.sleep(1)
+            if is_game_joined(config["game_id"], config["private_server"]):
+                print_formatted("SUCCESS", "Successfully joined game")
+                loaded = True
+                break
                 
-                # Join game
-                if config["private_server"]:
-                    launch_url = config["private_server"]
-                else:
-                    launch_url = f"roblox://placeID={config['game_id']}"
+            if not is_roblox_running():
+                print_formatted("ERROR", "Roblox process stopped")
+                return False
                 
-                device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
-                
-                # Wait for game to load with progress checks
-                loaded = False
-                for i in range(config['launch_delay'] // 5):
-                    time.sleep(5)
-                    current_activity = get_current_activity(device)
-                    
-                    # Check for error states
-                    if is_in_error_state(current_activity):
-                        print_formatted("ERROR", "Detected error activity")
-                        break
-                        
-                    if is_game_joined(device, config["game_id"], config["private_server"]):
-                        print_formatted("SUCCESS", "Successfully joined game")
-                        loaded = True
-                        break
-                    
-                    # Bring to foreground periodically
-                    if i % 2 == 0:
-                        device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
-                
-                if loaded:
-                    return True
-                    
-                print_formatted("WARNING", f"Attempt {attempt + 1} failed, retrying...")
-                
-            except Exception as e:
-                print_formatted("ERROR", f"Launch attempt {attempt + 1} error: {e}")
-                prepare_roblox(device, config)
-
-        print_formatted("ERROR", "All launch attempts failed")
-        return False
+        return loaded
         
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
@@ -340,44 +273,47 @@ def launch_game(config, device):
 # GAME VALIDATION
 # ======================
 def validate_game_id(game_id, config):
-    if not game_id.isdigit() or len(game_id) < 13 or len(game_id) > 15:
-        print_formatted("ERROR", "Game ID must be 13-15 digits")
+    if not game_id.isdigit() or len(game_id) < 6:
+        print_formatted("ERROR", "Invalid Game ID format")
         return False
+        
     if not config.get("game_validation", True):
-        print_formatted("WARNING", "Skipping game validation as configured")
         return True
+        
     try:
         url = f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={game_id}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if isinstance(data, list) and data and data[0].get("placeId"):
                 print_formatted("SUCCESS", f"Valid game: {data[0].get('name', 'Unknown')}")
                 return True
-            elif isinstance(data, dict) and data.get("data"):
-                print_formatted("SUCCESS", f"Valid game: {data['data'][0].get('name', 'Unknown')}")
-                return True
-        print_formatted("WARNING", f"API returned {response.status_code}. Using fallback validation.")
         return True
-    except Exception as e:
-        print_formatted("ERROR", f"Validation error: {e}")
+    except:
         return True
 
-def validate_private_server(link, config):
+def validate_private_server(link):
     try:
-        if not link.startswith(("https://www.roblox.com/games/", "roblox://")):
-            print_formatted("ERROR", "Invalid link format")
-            return False, None
-        if "privateServerLinkCode=" in link or "share?code=" in link:
-            parts = link.split("/games/")[1].split("/")
-            place_id = parts[0]
-            return True, place_id
-        print_formatted("ERROR", "Link must contain privateServerLinkCode or share?code")
-        return False, None
+        if not any(x in link for x in ["privateServerLinkCode=", "share?code="]):
+            print_formatted("ERROR", "Link must contain private server code")
+            return False
+            
+        if "games/" in link:
+            place_id = link.split("/games/")[1].split("/")[0]
+        elif "placeId=" in link:
+            place_id = link.split("placeId=")[1].split("&")[0]
+        else:
+            print_formatted("ERROR", "Couldn't extract game ID from link")
+            return False
+            
+        if not place_id.isdigit():
+            print_formatted("ERROR", "Invalid game ID in link")
+            return False
+            
+        return True
     except Exception as e:
         print_formatted("ERROR", f"Link validation error: {e}")
-        return False, None
+        return False
 
 # ======================
 # ACCOUNT MANAGEMENT
@@ -389,63 +325,64 @@ def get_user_id(username):
         if response.status_code == 200:
             data = response.json()
             return str(data.get("Id"))
-        print_formatted("ERROR", f"API error: {response.status_code}")
         return None
-    except Exception as e:
-        print_formatted("ERROR", f"User ID fetch error: {e}")
+    except:
         return None
 
-def add_account(config, device):
+def add_account(config):
     print_formatted("INFO", "Enter Roblox username or ID:")
     account = input("> ").strip()
     if not account:
         print_formatted("ERROR", "Account cannot be empty")
         return
+        
     if any(c.isalpha() for c in account):
         user_id = get_user_id(account)
-        if user_id:
-            account = user_id
-        else:
-            print_formatted("WARNING", "Couldn't verify username. Using as-is")
+        account = user_id if user_id else account
+        
     if account not in config["accounts"]:
         config["accounts"].append(account)
-        save_config(config, device)
+        save_config(config)
         print_formatted("SUCCESS", f"Added account: {account}")
     else:
         print_formatted("WARNING", "Account already exists")
 
-def delete_account(config, device):
+def delete_account(config):
     if not config["accounts"]:
         print_formatted("WARNING", "No accounts to delete")
         return
+        
     print_formatted("INFO", "Select account to delete:")
     for i, acc in enumerate(config["accounts"], 1):
         print(f"{COLORS['CYAN']}{i}: {acc}{COLORS['RESET']}")
+        
     try:
         choice = int(input("> ")) - 1
         if 0 <= choice < len(config["accounts"]):
             removed = config["accounts"].pop(choice)
             if config["active_account"] == removed:
                 config["active_account"] = ""
-            save_config(config, device)
+            save_config(config)
             print_formatted("SUCCESS", f"Removed account: {removed}")
         else:
             print_formatted("ERROR", "Invalid selection")
     except ValueError:
         print_formatted("ERROR", "Please enter a number")
 
-def select_account(config, device):
+def select_account(config):
     if not config["accounts"]:
         print_formatted("WARNING", "No accounts available")
         return
+        
     print_formatted("INFO", "Select active account:")
     for i, acc in enumerate(config["accounts"], 1):
         print(f"{COLORS['CYAN']}{i}: {acc}{COLORS['RESET']}")
+        
     try:
         choice = int(input("> ")) - 1
         if 0 <= choice < len(config["accounts"]):
             config["active_account"] = config["accounts"][choice]
-            save_config(config, device)
+            save_config(config)
             print_formatted("SUCCESS", f"Active account: {config['active_account']}")
         else:
             print_formatted("ERROR", "Invalid selection")
@@ -455,34 +392,41 @@ def select_account(config, device):
 # ======================
 # GAME SETTINGS
 # ======================
-def set_game(config, device):
-    print_formatted("INFO", "Enter Game ID or Private Server Link:")
-    print("(Type 'delete' to clear current settings)")
-    game_input = input("> ").strip()
-    if game_input.lower() == "delete":
-        delete_game_settings(config, device)
+def set_game(config):
+    print_formatted("INFO", "Enter Game ID:")
+    game_id = input("> ").strip()
+    
+    if game_id.lower() == 'delete':
+        delete_game_settings(config)
         return
-    if "roblox.com" in game_input or game_input.startswith("roblox://"):
-        is_valid, place_id = validate_private_server(game_input, config)
-        if is_valid:
-            config["private_server"] = game_input
-            config["game_id"] = place_id
-            save_config(config, device)
-            print_formatted("SUCCESS", "Private server configured")
-    else:
-        if validate_game_id(game_input, config):
-            config["game_id"] = game_input
+        
+    if not validate_game_id(game_id, config):
+        return
+        
+    config["game_id"] = game_id
+    
+    print_formatted("INFO", "Enter Private Server Link (leave empty if none):")
+    ps_link = input("> ").strip()
+    
+    if ps_link:
+        if validate_private_server(ps_link):
+            config["private_server"] = ps_link
+        else:
             config["private_server"] = ""
-            save_config(config, device)
-            print_formatted("SUCCESS", "Game ID configured")
+            print_formatted("ERROR", "Invalid private server link - using game ID only")
+    else:
+        config["private_server"] = ""
+    
+    save_config(config)
+    print_formatted("SUCCESS", "Game settings updated")
 
-def delete_game_settings(config, device):
+def delete_game_settings(config):
     config["game_id"] = ""
     config["private_server"] = ""
-    save_config(config, device)
+    save_config(config)
     print_formatted("SUCCESS", "Game ID and Server Link cleared")
 
-def set_check_delay(config, device):
+def set_check_delay(config):
     try:
         print_formatted("INFO", "Enter check delay (seconds, min 10):")
         delay = int(input("> ").strip())
@@ -490,12 +434,12 @@ def set_check_delay(config, device):
             print_formatted("ERROR", "Minimum delay is 10 seconds")
             return
         config["check_delay"] = delay
-        save_config(config, device)
+        save_config(config)
         print_formatted("SUCCESS", f"Check delay set to {delay}s")
     except ValueError:
         print_formatted("ERROR", "Please enter a number")
 
-def set_check_method(config, device):
+def set_check_method(config):
     print_formatted("INFO", "Select check method:")
     print(f"{COLORS['CYAN']}1:{COLORS['RESET']} Executor UI only")
     print(f"{COLORS['CYAN']}2:{COLORS['RESET']} Roblox running only")
@@ -504,12 +448,12 @@ def set_check_method(config, device):
     methods = {"1": "executor", "2": "roblox", "3": "both"}
     if choice in methods:
         config["check_method"] = methods[choice]
-        save_config(config, device)
+        save_config(config)
         print_formatted("SUCCESS", f"Method set to: {methods[choice]}")
     else:
         print_formatted("ERROR", "Invalid selection")
 
-def set_launch_delay(config, device):
+def set_launch_delay(config):
     try:
         print_formatted("INFO", "Enter launch delay (seconds, min 10, default 90):")
         delay = int(input("> ").strip())
@@ -517,12 +461,12 @@ def set_launch_delay(config, device):
             print_formatted("ERROR", "Minimum delay is 10 seconds")
             return
         config["launch_delay"] = delay
-        save_config(config, device)
+        save_config(config)
         print_formatted("SUCCESS", f"Launch delay set to {delay}s")
     except ValueError:
         print_formatted("ERROR", "Please enter a number")
 
-def set_retry_delay(config, device):
+def set_retry_delay(config):
     try:
         print_formatted("INFO", "Enter retry delay (seconds, min 5, default 15):")
         delay = int(input("> ").strip())
@@ -530,31 +474,31 @@ def set_retry_delay(config, device):
             print_formatted("ERROR", "Minimum delay is 5 seconds")
             return
         config["retry_delay"] = delay
-        save_config(config, device)
+        save_config(config)
         print_formatted("SUCCESS", f"Retry delay set to {delay}s")
     except ValueError:
         print_formatted("ERROR", "Please enter a number")
 
-def toggle_game_validation(config, device):
+def toggle_game_validation(config):
     config["game_validation"] = not config.get("game_validation", True)
-    save_config(config, device)
+    save_config(config)
     status = "ENABLED" if config["game_validation"] else "DISABLED"
     print_formatted("SUCCESS", f"Game validation {status}")
 
-def toggle_crash_protection(config, device):
+def toggle_crash_protection(config):
     config["minimize_crashes"] = not config.get("minimize_crashes", True)
-    save_config(config, device)
+    save_config(config)
     status = "ENABLED" if config["minimize_crashes"] else "DISABLED"
     print_formatted("SUCCESS", f"Crash protection {status}")
 
 # ======================
 # STATUS CHECKS
 # ======================
-def is_executor_running(device):
+def is_executor_running():
     try:
         packages = ["com.codex", "com.arceusx", "com.delta"]
         for pkg in packages:
-            output = device.shell(f"ps -A | grep {pkg}")
+            output = run_shell_command(f"ps -A | grep {pkg}")
             if output.strip():
                 return True
         return False
@@ -562,37 +506,37 @@ def is_executor_running(device):
         print_formatted("ERROR", f"Executor check error: {e}")
         return False
 
-def is_account_logged_in(device, user_id):
+def is_account_logged_in(user_id):
     try:
-        device.shell("logcat -c")  # Clear logs
+        run_shell_command("logcat -c")
         time.sleep(1)
-        output = device.shell(f"logcat -d -t 200 | grep -i 'user.*id.*{user_id}'")
+        output = run_shell_command(f"logcat -d -t 200 | grep -i 'user.*id.*{user_id}'")
         return user_id in output
     except Exception as e:
         print_formatted("ERROR", f"Account check error: {e}")
         return False
 
-def check_status(config, device):
-    if not device:
-        return
-        
-    if not verify_roblox_installation(device):
+def check_status(config):
+    if not verify_roblox_installation():
         return
         
     print_formatted("INFO", "Running status checks...")
     
     if config["check_method"] in ["executor", "both"]:
-        executor_running = is_executor_running(device)
-        print_formatted("SUCCESS" if executor_running else "WARNING", f"Executor: {'Running' if executor_running else 'Not running'}")
+        executor_running = is_executor_running()
+        print_formatted("SUCCESS" if executor_running else "WARNING", 
+                      f"Executor: {'Running' if executor_running else 'Not running'}")
     
     if config["check_method"] in ["roblox", "both"]:
-        roblox_running = is_roblox_running(device)
-        print_formatted("SUCCESS" if roblox_running else "WARNING", f"Roblox: {'Running' if roblox_running else 'Not running'}")
+        roblox_running = is_roblox_running()
+        print_formatted("SUCCESS" if roblox_running else "WARNING", 
+                      f"Roblox: {'Running' if roblox_running else 'Not running'}")
         
         if roblox_running:
-            activity = get_current_activity(device)
-            in_game = is_game_joined(device, config["game_id"], config["private_server"])
-            print_formatted("SUCCESS" if in_game else "WARNING", f"Game status: {'In game' if in_game else 'Not in game'}")
+            activity = get_current_activity()
+            in_game = is_game_joined(config["game_id"], config["private_server"])
+            print_formatted("SUCCESS" if in_game else "WARNING", 
+                          f"Game status: {'In game' if in_game else 'Not in game'}")
             
             if is_in_main_menu(activity):
                 print_formatted("WARNING", "Roblox is in main menu")
@@ -600,31 +544,30 @@ def check_status(config, device):
                 print_formatted("ERROR", "Roblox is in error state")
     
     if config["active_account"]:
-        logged_in = is_account_logged_in(device, config["active_account"])
-        print_formatted("SUCCESS" if logged_in else "WARNING", f"Account: {'Logged in' if logged_in else 'Not logged in'}")
+        logged_in = is_account_logged_in(config["active_account"])
+        print_formatted("SUCCESS" if logged_in else "WARNING", 
+                      f"Account: {'Logged in' if logged_in else 'Not logged in'}")
     
     print_formatted("INFO", "Status check complete")
 
 # ======================
 # AUTO-REJOIN
 # ======================
-def should_rejoin(device, config):
-    if not is_roblox_running(device):
+def should_rejoin(config):
+    if not is_roblox_running():
         return True
         
-    activity = get_current_activity(device)
+    activity = get_current_activity()
     
-    if is_game_joined(device, config["game_id"], config["private_server"]):
+    if is_game_joined(config["game_id"], config["private_server"]):
         return False
         
-    if (is_in_main_menu(activity) or 
-        is_in_error_state(activity) or
-        "NotResponding" in activity):
+    if (is_in_main_menu(activity) or is_in_error_state(activity)):
         return True
         
     return False
 
-def auto_rejoin(config, device):
+def auto_rejoin(config):
     if not is_root_available():
         print_formatted("ERROR", "Root access required for auto-rejoin.")
         return
@@ -637,14 +580,11 @@ def auto_rejoin(config, device):
         print_formatted("ERROR", "No game configured")
         return
         
-    if not device:
-        return
-        
-    if not verify_roblox_installation(device):
+    if not verify_roblox_installation():
         return
     
     print_formatted("INFO", f"Starting auto-rejoin for {config['active_account']}")
-    print_formatted("INFO", "Press Ctrl+C to stop. Note: Join game manually if auto-join fails.")
+    print_formatted("INFO", "Press Ctrl+C to stop")
     
     try:
         retry_count = 0
@@ -658,13 +598,14 @@ def auto_rejoin(config, device):
                     time.sleep(config.get("cooldown_period", 120))
                     cooldown = False
                     
-                if should_rejoin(device, config):
+                if should_rejoin(config):
                     print_formatted("WARNING", "Rejoin conditions met - attempting to rejoin...")
-                    prepare_roblox(device, config)
-                    if launch_game(config, device):
+                    if launch_game(config):
                         retry_count = 0
+                        print_formatted("SUCCESS", "Successfully rejoined game")
                     else:
                         retry_count += 1
+                        print_formatted("WARNING", f"Rejoin failed (attempt {retry_count}/{max_retries})")
                 else:
                     retry_count = 0
                     print_formatted("SUCCESS", "Roblox is running and in correct game")
@@ -688,22 +629,22 @@ def auto_rejoin(config, device):
                 
     except KeyboardInterrupt:
         print_formatted("INFO", "Auto-rejoin stopped")
-        close_roblox(device, True, config)
+        close_roblox(config)
 
 # ======================
 # MAIN MENU
 # ======================
-def show_menu(config, device):
+def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.7
+       Koala Hub Auto-Rejoin v4.8
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
 {COLORS['CYAN']}• Game ID: {config['game_id'] or 'None'}
-{COLORS['CYAN']}• Private Server: {config['private_server'] or 'None'}
+{COLORS['CYAN']}• Private Server: {'Yes' if config['private_server'] else 'No'}
 {COLORS['CYAN']}• Check Delay: {config['check_delay']}s
 {COLORS['CYAN']}• Check Method: {config['check_method']}
 {COLORS['CYAN']}• Launch Delay: {config['launch_delay']}s
@@ -711,7 +652,6 @@ def show_menu(config, device):
 {COLORS['CYAN']}• Cooldown Period: {config.get('cooldown_period', 120)}s
 {COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
 {COLORS['CYAN']}• Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
-{COLORS['CYAN']}• Launch Attempts: {config.get('launch_attempts', 3)}
 
 {COLORS['BOLD']}Menu Options:{COLORS['RESET']}
 {COLORS['CYAN']}1:{COLORS['RESET']} Add Account
@@ -731,31 +671,31 @@ def show_menu(config, device):
 """)
         choice = input(f"{COLORS['CYAN']}> {COLORS['RESET']}").strip()
         if choice == "1":
-            add_account(config, device)
+            add_account(config)
         elif choice == "2":
-            delete_account(config, device)
+            delete_account(config)
         elif choice == "3":
-            select_account(config, device)
+            select_account(config)
         elif choice == "4":
-            set_game(config, device)
+            set_game(config)
         elif choice == "5":
-            set_check_delay(config, device)
+            set_check_delay(config)
         elif choice == "6":
-            set_check_method(config, device)
+            set_check_method(config)
         elif choice == "7":
-            set_launch_delay(config, device)
+            set_launch_delay(config)
         elif choice == "8":
-            set_retry_delay(config, device)
+            set_retry_delay(config)
         elif choice == "9":
-            toggle_game_validation(config, device)
+            toggle_game_validation(config)
         elif choice == "10":
-            toggle_crash_protection(config, device)
+            toggle_crash_protection(config)
         elif choice == "11":
-            check_status(config, device)
+            check_status(config)
         elif choice == "12":
-            auto_rejoin(config, device)
+            auto_rejoin(config)
         elif choice == "13":
-            delete_game_settings(config, device)
+            delete_game_settings(config)
         elif choice == "14":
             print_formatted("INFO", "Exiting...")
             break
@@ -767,24 +707,16 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.7
+       Koala Hub Auto-Rejoin v4.8
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-• Reliable Roblox launching with multiple attempts
-• Advanced crash protection system
-• Smart game detection and rejoin logic
-• Root-optimized for best performance
-• Emulator compatibility improvements
-• Cooldown system to prevent rapid retries
+• Single-attempt launch (more reliable)
+• Improved private server handling
+• Better crash/freeze detection
+• Cloud phone compatible
+• Root-optimized performance
 """)
-    device = check_adb()
-    if not device:
-        print_formatted("ERROR", "ADB connection failed. Check:")
-        print_formatted("INFO", "1. USB Debugging enabled")
-        print_formatted("INFO", "2. Device connected")
-        print_formatted("INFO", "3. ADB properly set up")
-        return
-    show_menu(config, device)
+    show_menu(config)
 
 if __name__ == "__main__":
     main()

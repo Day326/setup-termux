@@ -56,7 +56,9 @@ def load_config():
         "game_validation": True,
         "launch_delay": 40,
         "retry_delay": 10,
-        "force_kill_delay": 5
+        "force_kill_delay": 5,
+        "gentle_launch": True,
+        "minimize_crashes": True
     }
     try:
         if os.path.exists(CONFIG_FILE):
@@ -151,7 +153,6 @@ def detect_main_activity(device):
 
 def is_game_joined(device, game_id, private_server):
     try:
-        # Check logcat for game join patterns
         patterns = [
             f"place[._]?id.*{game_id}",
             f"game[._]?id.*{game_id}",
@@ -177,12 +178,10 @@ def is_game_joined(device, game_id, private_server):
         if logs.strip():
             return True
 
-        # Check current activity
         activity = get_current_activity(device)
         if "com.roblox.client" in activity and is_in_game_activity(activity):
             return True
 
-        # Additional surface flinger check
         surface = device.shell("dumpsys SurfaceFlinger --list | grep com.roblox.client").strip()
         if surface and "Game" in surface:
             return True
@@ -194,15 +193,24 @@ def is_game_joined(device, game_id, private_server):
 
 def close_roblox(device, is_rooted, config=None):
     try:
-        if is_rooted:
-            device.shell("su -c 'am force-stop com.roblox.client'")
-            print_formatted("INFO", "Roblox force-stopped with root")
-            if config:
-                time.sleep(config.get("force_kill_delay", 5))
-            else:
-                time.sleep(5)  # Default delay if no config provided
-            return True
-        return False
+        if config.get("minimize_crashes", True):
+            print_formatted("INFO", "Using safe close method...")
+            device.shell("input keyevent HOME")
+            time.sleep(1)
+            device.shell("am force-stop com.roblox.client")
+            time.sleep(config.get("force_kill_delay", 3))
+        else:
+            if is_rooted:
+                device.shell("su -c 'am force-stop com.roblox.client'")
+                time.sleep(config.get("force_kill_delay", 3))
+        
+        # Verify closed
+        if is_roblox_running(device):
+            print_formatted("WARNING", "Roblox still running, trying alternative close...")
+            device.shell("am kill com.roblox.client")
+            time.sleep(2)
+        
+        return True
     except Exception as e:
         print_formatted("ERROR", f"Failed to close Roblox: {e}")
         return False
@@ -215,10 +223,8 @@ def prepare_roblox(device, config):
         print_formatted("INFO", "Preparing Roblox for launch...")
         is_rooted = is_root_available()
         
-        # Only force close if we're not already in the correct game
-        current_activity = get_current_activity(device)
         if not is_game_joined(device, config["game_id"], config["private_server"]):
-            close_roblox(device, is_rooted)
+            close_roblox(device, is_rooted, config)
         return True
     except Exception as e:
         print_formatted("ERROR", f"Preparation error: {e}")
@@ -229,29 +235,45 @@ def launch_game(config, device):
         is_rooted = is_root_available()
         main_activity = detect_main_activity(device)
         
-        # First launch Roblox to main activity
-        launch_cmd = f"am start -n {ROBLOX_PACKAGE}/{main_activity}"
-        print_formatted("INFO", f"Launching Roblox with activity {main_activity}...")
-        device.shell(launch_cmd)
-        time.sleep(5)  # Wait for Roblox to initialize
-
-        # Now launch the game
-        if config["private_server"]:
-            launch_url = config["private_server"]
+        if config.get("minimize_crashes", True):
+            print_formatted("INFO", "Using crash-resistant launch method...")
+            
+            # Step 1: Launch Roblox gently
+            device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
+            time.sleep(5)
+            
+            # Step 2: Clear any pending dialogs
+            device.shell("input keyevent BACK")
+            time.sleep(1)
+            
+            # Step 3: Join game
+            if config["private_server"]:
+                launch_url = config["private_server"]
+            else:
+                launch_url = f"roblox://placeID={config['game_id']}"
+            
+            device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
+            time.sleep(3)
+            
+            # Step 4: Ensure app is in foreground
+            device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
         else:
-            launch_url = f"roblox://placeID={config['game_id']}"
-        
-        launch_cmd = f"am start -a android.intent.action.VIEW -d '{launch_url}'"
-        print_formatted("INFO", f"Attempting to join game {config['game_id']}...")
-        device.shell(launch_cmd)
+            # Original direct launch method
+            if config["private_server"]:
+                launch_url = config["private_server"]
+            else:
+                launch_url = f"roblox://placeID={config['game_id']}"
+            
+            device.shell(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
 
-        # Wait and verify
+        # Verification loop
         print_formatted("INFO", f"Waiting {config['launch_delay']} seconds for game to load...")
         for i in range(config['launch_delay']):
             time.sleep(1)
             if is_game_joined(device, config["game_id"], config["private_server"]):
                 print_formatted("SUCCESS", "Successfully joined game")
                 return True
+            
             if i % 5 == 0 and is_rooted:
                 device.shell(f"am start -n {ROBLOX_PACKAGE}/{main_activity}")
 
@@ -472,6 +494,12 @@ def toggle_game_validation(config):
     status = "ENABLED" if config["game_validation"] else "DISABLED"
     print_formatted("SUCCESS", f"Game validation {status}")
 
+def toggle_crash_protection(config):
+    config["minimize_crashes"] = not config.get("minimize_crashes", True)
+    save_config(config)
+    status = "ENABLED" if config["minimize_crashes"] else "DISABLED"
+    print_formatted("SUCCESS", f"Crash protection {status}")
+
 # ======================
 # STATUS CHECKS
 # ======================
@@ -499,11 +527,12 @@ def check_status(config):
     device = check_adb()
     if not device:
         return
-    print_formatted("INFO", "Running status checks...")
-    
+        
     if not verify_roblox_installation(device):
         return
         
+    print_formatted("INFO", "Running status checks...")
+    
     if config["check_method"] in ["executor", "both"]:
         executor_running = is_executor_running(device)
         print_formatted("SUCCESS" if executor_running else "WARNING", f"Executor: {'Running' if executor_running else 'Not running'}")
@@ -537,11 +566,9 @@ def should_rejoin(device, config):
         
     activity = get_current_activity(device)
     
-    # If we're already in the correct game, no need to rejoin
     if is_game_joined(device, config["game_id"], config["private_server"]):
         return False
         
-    # Conditions that require rejoining
     if (is_in_main_menu(activity) or 
         is_in_error_state(activity) or
         "NotResponding" in activity):
@@ -608,7 +635,7 @@ def auto_rejoin(config):
                 
     except KeyboardInterrupt:
         print_formatted("INFO", "Auto-rejoin stopped")
-        close_roblox(device, True)
+        close_roblox(device, True, config)
 
 # ======================
 # MAIN MENU
@@ -618,7 +645,7 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.4
+       Koala Hub Auto-Rejoin v4.5
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
@@ -629,6 +656,7 @@ def show_menu(config):
 {COLORS['CYAN']}• Launch Delay: {config['launch_delay']}s
 {COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 10)}s
 {COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
+{COLORS['CYAN']}• Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
 
 {COLORS['BOLD']}Menu Options:{COLORS['RESET']}
 {COLORS['CYAN']}1:{COLORS['RESET']} Add Account
@@ -640,10 +668,11 @@ def show_menu(config):
 {COLORS['CYAN']}7:{COLORS['RESET']} Set Launch Delay
 {COLORS['CYAN']}8:{COLORS['RESET']} Set Retry Delay
 {COLORS['CYAN']}9:{COLORS['RESET']} Toggle Game Validation
-{COLORS['CYAN']}10:{COLORS['RESET']} Check Status
-{COLORS['CYAN']}11:{COLORS['RESET']} Start Auto-Rejoin
-{COLORS['CYAN']}12:{COLORS['RESET']} Delete Game ID/Server
-{COLORS['CYAN']}13:{COLORS['RESET']} Exit
+{COLORS['CYAN']}10:{COLORS['RESET']} Toggle Crash Protection
+{COLORS['CYAN']}11:{COLORS['RESET']} Check Status
+{COLORS['CYAN']}12:{COLORS['RESET']} Start Auto-Rejoin
+{COLORS['CYAN']}13:{COLORS['RESET']} Delete Game ID/Server
+{COLORS['CYAN']}14:{COLORS['RESET']} Exit
 """)
         choice = input(f"{COLORS['CYAN']}> {COLORS['RESET']}").strip()
         if choice == "1":
@@ -665,12 +694,14 @@ def show_menu(config):
         elif choice == "9":
             toggle_game_validation(config)
         elif choice == "10":
-            check_status(config)
+            toggle_crash_protection(config)
         elif choice == "11":
-            auto_rejoin(config)
+            check_status(config)
         elif choice == "12":
-            delete_game_settings(config)
+            auto_rejoin(config)
         elif choice == "13":
+            delete_game_settings(config)
+        elif choice == "14":
             print_formatted("INFO", "Exiting...")
             break
         else:
@@ -681,13 +712,13 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.4
+       Koala Hub Auto-Rejoin v4.5
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
+• Advanced crash protection system
 • Smart game detection and rejoin logic
-• Only restarts when needed (main menu, errors)
-• Root-optimized for best performance
 • Configurable delays and retries
+• Root-optimized for best performance
 """)
     device = check_adb()
     if not device:

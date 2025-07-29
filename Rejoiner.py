@@ -24,6 +24,7 @@ COLORS = {
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
 
+# Global variables
 roblox_process_count = 0
 last_launch_time = 0
 roblox_version = "Unknown"
@@ -81,7 +82,7 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 200,
+        "launch_delay": 300,
         "retry_delay": 15,
         "force_kill_delay": 10,
         "minimize_crashes": True,
@@ -350,27 +351,35 @@ def launch_game(config):
         time.sleep(3)
         launch_url = build_launch_url(config["game_id"], config["private_server"])
         print_formatted("INFO", f"Joining game: {launch_url}")
-        for attempt in range(5):
+        joined = False
+        for attempt in range(7):
             result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
+            print_formatted("INFO", f"Deep link result (attempt {attempt + 1}): {result}")
             if "Error" not in result:
                 print_formatted("SUCCESS", f"Game join attempt {attempt + 1} succeeded")
+                joined = True
                 break
             print_formatted("WARNING", f"Game join attempt {attempt + 1} failed: {result}")
             if launch_url.startswith("roblox://"):
                 https_url = launch_url.replace("roblox://", "https://www.roblox.com/games/")
                 result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{https_url}'")
+                print_formatted("INFO", f"HTTPS result (attempt {attempt + 1}): {result}")
                 if "Error" not in result:
                     print_formatted("SUCCESS", f"HTTPS join attempt {attempt + 1} succeeded")
+                    joined = True
                     break
             print_formatted("WARNING", f"HTTPS join attempt {attempt + 1} failed: {result}")
-            time.sleep(10)
-        if "Error" in result:
-            print_formatted("ERROR", f"Failed to join game: {result}")
-            close_roblox(config)
-            return False
+            time.sleep(15)
+        if not joined:
+            print_formatted("WARNING", "Falling back to manual join trigger...")
+            run_shell_command("input keyevent 66")
+            time.sleep(5)
+        # Simulate taps to bypass UI stalls
         run_shell_command("input tap 500 500")
         time.sleep(5)
         run_shell_command("input tap 600 600")
+        time.sleep(5)
+        run_shell_command("input tap 540 960")
         time.sleep(5)
         loaded = False
         for i in range(config['launch_delay'] // 5):
@@ -522,7 +531,7 @@ def select_account(config):
 # GAME SETTINGS
 # ======================
 def set_game(config):
-    print_formatted("INFO", "Enter Game ID:")
+    print_formatted("INFO", "Enter Game ID (e.g., 126884695634066):")
     game_id = input("> ").strip()
     if game_id.lower() == "delete":
         delete_game_settings(config)
@@ -578,7 +587,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 200):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 300):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -731,7 +740,7 @@ def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.4 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.5 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Settings:{COLORS['RESET']}
   Roblox Version: {roblox_version}
@@ -802,13 +811,13 @@ def main():
         return
     config = load_config()
     print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.4 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.5 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
   - ADB-free for UGPhone/emulator
   - Compatible with Roblox v2.683+
   - Preserves login sessions
-  - Reliable game join
+  - Enhanced game join with retries
   - Clean console interface
 """)
     if not verify_roblox_installation():

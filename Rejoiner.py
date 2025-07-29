@@ -33,7 +33,6 @@ roblox_version = "Unknown"
 # ======================
 def print_formatted(level, message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    color = COLORS.get(level, COLORS["RESET"])
     prefix = {
         "INFO": "INFO",
         "SUCCESS": "OK",
@@ -41,7 +40,7 @@ def print_formatted(level, message):
         "ERROR": "ERROR",
         "HEADER": "===="
     }.get(level, level)
-    print(f"{color}{timestamp} [{prefix}] {message}{COLORS['RESET']}")
+    print(f"{COLORS[level]}{timestamp} [{prefix}] {message}{COLORS['RESET']}")
 
 def is_root_available():
     try:
@@ -82,7 +81,7 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 120,
+        "launch_delay": 200,
         "retry_delay": 15,
         "force_kill_delay": 10,
         "minimize_crashes": True,
@@ -118,7 +117,7 @@ def save_config(config):
 def verify_roblox_installation():
     output = run_shell_command(f"pm list packages {ROBLOX_PACKAGE}")
     if ROBLOX_PACKAGE not in output:
-        print_formatted("ERROR", "Roblox not installed.")
+        print_formatted("ERROR", "Roblox not installed. Install from Google Play or APK (v2.683+).")
         return False
     get_roblox_version()
     return True
@@ -192,10 +191,8 @@ def close_roblox(config=None):
         run_shell_command(f"pkill -9 -f {ROBLOX_PACKAGE}")
         time.sleep(config.get("force_kill_delay", 10) if config else 10)
         if is_roblox_running():
-            print_formatted("WARNING", "Roblox still running, clearing data...")
-            run_shell_command(f"pm clear {ROBLOX_PACKAGE}")
+            print_formatted("WARNING", "Roblox still running, clearing cache...")
             run_shell_command(f"rm -rf /data/data/{ROBLOX_PACKAGE}/cache/*")
-            run_shell_command(f"rm -rf /data/data/{ROBLOX_PACKAGE}/files/*")
             time.sleep(5)
         if is_roblox_running():
             print_formatted("ERROR", "Failed to close Roblox")
@@ -217,8 +214,6 @@ def prepare_roblox(config):
                     print_formatted("ERROR", "Failed to prepare Roblox")
                     return False
             time.sleep(2)
-        run_shell_command(f"pm clear {ROBLOX_PACKAGE}")
-        time.sleep(3)
         roblox_process_count = 0
         return True
     except Exception as e:
@@ -298,6 +293,20 @@ def build_launch_url(game_id, private_server):
         print_formatted("ERROR", f"URL build error: {e}")
         return f"roblox://placeID={game_id}"
 
+def is_account_logged_in(user_id):
+    try:
+        run_shell_command("logcat -c")
+        time.sleep(1)
+        output = run_shell_command(f"logcat -d -t 100 | grep -i 'user.*id.*{user_id}'")
+        if user_id in output:
+            print_formatted("SUCCESS", f"Account {user_id} is logged in")
+            return True
+        print_formatted("WARNING", f"Account {user_id} not logged in")
+        return False
+    except Exception as e:
+        print_formatted("ERROR", f"Login check error: {e}")
+        return False
+
 def launch_game(config):
     global roblox_process_count, last_launch_time
     current_time = time.time()
@@ -334,28 +343,34 @@ def launch_game(config):
             print_formatted("ERROR", "Roblox failed to start")
             close_roblox(config)
             return False
-        print_formatted("SUCCESS", "Roblox started, preparing to join game...")
+        print_formatted("SUCCESS", "Roblox started, checking login...")
+        if not is_account_logged_in(config["active_account"]):
+            print_formatted("WARNING", "Manual login may be required")
         run_shell_command("input keyevent BACK")
         time.sleep(3)
         launch_url = build_launch_url(config["game_id"], config["private_server"])
         print_formatted("INFO", f"Joining game: {launch_url}")
-        for attempt in range(3):
+        for attempt in range(5):
             result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
             if "Error" not in result:
+                print_formatted("SUCCESS", f"Game join attempt {attempt + 1} succeeded")
                 break
-            print_formatted("WARNING", f"URL launch attempt {attempt + 1} failed: {result}")
+            print_formatted("WARNING", f"Game join attempt {attempt + 1} failed: {result}")
             if launch_url.startswith("roblox://"):
                 https_url = launch_url.replace("roblox://", "https://www.roblox.com/games/")
                 result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{https_url}'")
                 if "Error" not in result:
+                    print_formatted("SUCCESS", f"HTTPS join attempt {attempt + 1} succeeded")
                     break
-            print_formatted("WARNING", f"HTTPS URL attempt {attempt + 1} failed: {result}")
-            time.sleep(5)
+            print_formatted("WARNING", f"HTTPS join attempt {attempt + 1} failed: {result}")
+            time.sleep(10)
         if "Error" in result:
             print_formatted("ERROR", f"Failed to join game: {result}")
             close_roblox(config)
             return False
         run_shell_command("input tap 500 500")
+        time.sleep(5)
+        run_shell_command("input tap 600 600")
         time.sleep(5)
         loaded = False
         for i in range(config['launch_delay'] // 5):
@@ -563,7 +578,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 120):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 200):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -609,12 +624,6 @@ def is_executor_running():
         if output.strip():
             return True
     return False
-
-def is_account_logged_in(user_id):
-    run_shell_command("logcat -c")
-    time.sleep(1)
-    output = run_shell_command(f"logcat -d -t 100 | grep -i 'user.*id.*{user_id}'")
-    return user_id in output
 
 def check_status(config):
     if not verify_roblox_installation():
@@ -722,7 +731,7 @@ def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.3 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.4 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Settings:{COLORS['RESET']}
   Roblox Version: {roblox_version}
@@ -789,17 +798,17 @@ def show_menu(config):
 
 def main():
     if not is_root_available():
-        print_formatted("ERROR", "Root access required. Ensure device is rooted.")
+        print_formatted("ERROR", "Root access required. Ensure device is rooted (e.g., via Magisk)")
         return
     config = load_config()
     print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.3 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.4 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
   - ADB-free for UGPhone/emulator
   - Compatible with Roblox v2.683+
-  - Reliable launch and game join
-  - Safe crash/kick/ban handling
+  - Preserves login sessions
+  - Reliable game join
   - Clean console interface
 """)
     if not verify_roblox_installation():

@@ -3,6 +3,7 @@ import time
 import os
 import json
 import subprocess
+import urllib.parse
 from datetime import datetime
 from prettytable import PrettyTable
 
@@ -21,10 +22,10 @@ COLORS = {
 
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
-MAIN_ACTIVITY = "UnityPlayerActivity"
 
 roblox_process_count = 0
 last_launch_time = 0
+roblox_version = "Unknown"
 
 # ======================
 # CORE FUNCTIONS
@@ -55,6 +56,18 @@ def run_shell_command(command, timeout=10):
         print_formatted("ERROR", f"Command failed: {command} - {str(e)}")
         return ""
 
+def get_roblox_version():
+    global roblox_version
+    try:
+        output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep versionName")
+        if output:
+            roblox_version = output.split("versionName=")[1].split()[0]
+            print_formatted("INFO", f"Detected Roblox version: {roblox_version}")
+        return roblox_version
+    except:
+        print_formatted("WARNING", "Could not detect Roblox version")
+        return "Unknown"
+
 def load_config():
     default_config = {
         "accounts": [],
@@ -65,7 +78,7 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 150,
+        "launch_delay": 120,
         "retry_delay": 15,
         "force_kill_delay": 10,
         "minimize_crashes": True,
@@ -101,8 +114,9 @@ def save_config(config):
 def verify_roblox_installation():
     output = run_shell_command(f"pm list packages {ROBLOX_PACKAGE}")
     if ROBLOX_PACKAGE not in output:
-        print_formatted("ERROR", "Roblox is not installed. Install from Google Play or APK (v2.681+).")
+        print_formatted("ERROR", "Roblox is not installed. Install from Google Play or APK (v2.683+).")
         return False
+    get_roblox_version()
     return True
 
 def is_roblox_running():
@@ -138,17 +152,20 @@ def check_roblox_state(game_id, private_server):
     try:
         run_shell_command("logcat -c")
         time.sleep(1)
-        log_cmd = "logcat -d -t 100 | grep -iE 'crash|fatal|disconnected|kicked|banned|notresponding|exception|error'"
+        log_cmd = "logcat -d -t 100 | grep -iE 'crash|fatal|disconnected|kicked|banned|notresponding|exception|error|anr|timeout|network|luaerror|processerror'"
         logs = run_shell_command(log_cmd)
-        if any(x in logs.lower() for x in ["crash", "fatal", "exception", "error"]):
+        if any(x in logs.lower() for x in ["crash", "fatal", "exception", "error", "anr", "luaerror", "processerror"]):
             print_formatted("ERROR", "Roblox crash detected")
             return "crashed"
         if any(x in logs.lower() for x in ["disconnected", "kicked", "banned"]):
             print_formatted("ERROR", "Roblox kick/ban detected")
             return "kicked"
-        if "notresponding" in logs.lower():
+        if any(x in logs.lower() for x in ["notresponding", "timeout"]):
             print_formatted("ERROR", "Roblox freeze detected")
             return "frozen"
+        if "network" in logs.lower():
+            print_formatted("ERROR", "Roblox network issue detected")
+            return "network"
         activity = get_current_activity()
         if is_in_error_state(activity):
             print_formatted("ERROR", "Roblox in error state")
@@ -165,16 +182,16 @@ def close_roblox(config=None):
     try:
         print_formatted("INFO", "Closing Roblox...")
         run_shell_command("input keyevent HOME")
-        time.sleep(1)
+        time.sleep(2)
         run_shell_command(f"am force-stop {ROBLOX_PACKAGE}")
+        run_shell_command(f"killall -9 {ROBLOX_PACKAGE}")
+        run_shell_command(f"pkill -9 -f {ROBLOX_PACKAGE}")
         time.sleep(config.get("force_kill_delay", 10) if config else 10)
         if is_roblox_running():
-            print_formatted("WARNING", "Roblox still running, using aggressive cleanup...")
-            run_shell_command(f"am kill {ROBLOX_PACKAGE}")
-            run_shell_command(f"pkill -f {ROBLOX_PACKAGE}")
-            run_shell_command(f"pkill -9 -f {ROBLOX_PACKAGE}")
+            print_formatted("WARNING", "Roblox still running, clearing data...")
             run_shell_command(f"pm clear {ROBLOX_PACKAGE}")
             run_shell_command(f"rm -rf /data/data/{ROBLOX_PACKAGE}/cache/*")
+            run_shell_command(f"rm -rf /data/data/{ROBLOX_PACKAGE}/files/*")
             time.sleep(5)
         if is_roblox_running():
             print_formatted("ERROR", "Failed to close Roblox")
@@ -195,7 +212,7 @@ def prepare_roblox(config):
                 if not close_roblox(config):
                     print_formatted("ERROR", "Failed to prepare Roblox")
                     return False
-            time.sleep(1)
+            time.sleep(2)
         run_shell_command(f"pm clear {ROBLOX_PACKAGE}")
         time.sleep(3)
         roblox_process_count = 0
@@ -207,6 +224,18 @@ def prepare_roblox(config):
 # ======================
 # GAME LAUNCH FUNCTIONS
 # ======================
+def get_main_activity():
+    try:
+        output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep -A 1 'MAIN' | grep 'com.roblox.client'")
+        if output:
+            activity = output.split()[-1].split('/')[-1]
+            print_formatted("INFO", f"Detected main activity: {activity}")
+            return activity
+        return ".MainActivity"
+    except:
+        print_formatted("WARNING", "Could not detect main activity, using default")
+        return ".MainActivity"
+
 def is_game_joined(game_id, private_server):
     try:
         run_shell_command("logcat -c")
@@ -218,11 +247,7 @@ def is_game_joined(game_id, private_server):
             f"placeId={game_id}"
         ]
         if private_server:
-            code = None
-            for sep in ["privateServerLinkCode=", "share?code=", "&linkCode=", "="]:
-                if sep in private_server:
-                    code = private_server.split(sep)[1].split("&")[0]
-                    break
+            code = extract_private_server_code(private_server)
             if code:
                 patterns.append(f"linkCode={code}")
         log_cmd = f"logcat -d -t 100 | grep -iE '{'|'.join(patterns)}'"
@@ -239,51 +264,86 @@ def is_game_joined(game_id, private_server):
         print_formatted("ERROR", f"Game detection error: {e}")
         return False
 
+def extract_private_server_code(link):
+    try:
+        for sep in ["privateServerLinkCode=", "share?code=", "&linkCode=", "="]:
+            if sep in link:
+                code = link.split(sep)[1].split("&")[0].strip()
+                if code:
+                    return code
+        return None
+    except:
+        return None
+
+def build_launch_url(game_id, private_server):
+    try:
+        if private_server:
+            code = extract_private_server_code(private_server)
+            if code:
+                return f"roblox://placeID={game_id}&privateServerLinkCode={code}"
+            print_formatted("WARNING", "No private server code found, using game ID")
+        return f"roblox://placeID={game_id}"
+    except Exception as e:
+        print_formatted("ERROR", f"URL build error: {e}")
+        return f"roblox://placeID={game_id}"
+
 def launch_game(config):
     global roblox_process_count, last_launch_time
     current_time = time.time()
-    if current_time - last_launch_time < 15:
+    if current_time - last_launch_time < 20:
         print_formatted("INFO", "Waiting before next launch...")
-        time.sleep(15 - (current_time - last_launch_time))
+        time.sleep(20 - (current_time - last_launch_time))
     last_launch_time = current_time
     try:
+        if not close_roblox(config):
+            print_formatted("ERROR", "Failed to close Roblox before launch")
+            return False
         if not prepare_roblox(config):
             print_formatted("ERROR", "Failed to prepare Roblox")
             return False
-        print_formatted("INFO", f"Launching Roblox with {MAIN_ACTIVITY}...")
-        result = run_shell_command(f"am start -n {ROBLOX_PACKAGE}/{MAIN_ACTIVITY} --activity-single-top")
+        print_formatted("INFO", "Launching Roblox...")
+        main_activity = get_main_activity()
+        result = run_shell_command(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/{main_activity}")
         if "Error" in result:
-            print_formatted("ERROR", f"Failed to launch activity: {result}")
-            return False
+            print_formatted("WARNING", f"Main activity launch failed: {result}")
+            result = run_shell_command(f"am start -n {ROBLOX_PACKAGE}/.MainActivity")
+            if "Error" in result:
+                print_formatted("ERROR", f"Fallback launch failed: {result}")
+                return False
         roblox_process_count = 1
-        time.sleep(30)
+        time.sleep(60)
         if not is_roblox_running():
             print_formatted("ERROR", "Roblox failed to start")
             close_roblox(config)
             return False
+        print_formatted("INFO", "Roblox started, preparing to join game...")
         run_shell_command("input keyevent BACK")
-        time.sleep(2)
-        if config["private_server"]:
-            launch_url = config["private_server"]
-            print_formatted("INFO", f"Joining private server: {launch_url}")
-        else:
-            launch_url = f"roblox://placeID={config['game_id']}"
-            print_formatted("INFO", f"Joining game ID: {config['game_id']}")
-        for attempt in range(2):
-            result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}' --activity-single-top")
+        time.sleep(3)
+        launch_url = build_launch_url(config["game_id"], config["private_server"])
+        print_formatted("INFO", f"Joining: {launch_url}")
+        for attempt in range(3):
+            result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
             if "Error" not in result:
                 break
             print_formatted("WARNING", f"URL launch attempt {attempt + 1} failed: {result}")
+            if launch_url.startswith("roblox://"):
+                https_url = launch_url.replace("roblox://", "https://www.roblox.com/games/")
+                result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{https_url}'")
+                if "Error" not in result:
+                    break
+            print_formatted("WARNING", f"HTTPS URL attempt {attempt + 1} failed: {result}")
             time.sleep(5)
         if "Error" in result:
             print_formatted("ERROR", f"Failed to join game: {result}")
             close_roblox(config)
             return False
+        run_shell_command("input tap 500 500")
+        time.sleep(5)
         loaded = False
         for i in range(config['launch_delay'] // 5):
             time.sleep(5)
             state = check_roblox_state(config["game_id"], config["private_server"])
-            if state in ["crashed", "kicked", "frozen", "error"]:
+            if state in ["crashed", "kicked", "frozen", "error", "network"]:
                 print_formatted("ERROR", f"Roblox state: {state}")
                 close_roblox(config)
                 return False
@@ -334,7 +394,8 @@ def validate_private_server(link, game_id):
         if not link.startswith(("https://www.roblox.com/games/", "roblox://")):
             print_formatted("ERROR", "Invalid link format")
             return False
-        if not any(x in link for x in ["privateServerLinkCode=", "share?code=", "&linkCode=", "="]):
+        code = extract_private_server_code(link)
+        if not code:
             print_formatted("ERROR", "Link must contain private server code")
             return False
         if link.startswith("https://"):
@@ -483,7 +544,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 150):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 200):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -573,12 +634,7 @@ def should_rejoin(config):
     state = check_roblox_state(config["game_id"], config["private_server"])
     if state == "running":
         return False, "running"
-    if state in ["crashed", "kicked", "frozen", "error"]:
-        return True, state
-    activity = get_current_activity()
-    if is_in_main_menu(activity) or is_in_error_state(activity):
-        return True, "main_menu_or_error"
-    return True, "unknown"
+    return True, state or "unknown"
 
 def auto_rejoin(config):
     if not is_root_available():
@@ -607,6 +663,10 @@ def auto_rejoin(config):
             should, reason = should_rejoin(config)
             if should:
                 print_formatted("WARNING", f"Rejoin conditions met - reason: {reason}")
+                if not close_roblox(config):
+                    retry_count += 1
+                    time.sleep(config.get("retry_delay", 15))
+                    continue
                 if not prepare_roblox(config):
                     retry_count += 1
                     time.sleep(config.get("retry_delay", 15))
@@ -644,9 +704,10 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.9
+       Koala Hub Auto-Rejoin v5.1
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
+{COLORS['CYAN']}• Roblox Version: {roblox_version}
 {COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
 {COLORS['CYAN']}• Game ID: {config['game_id'] or 'None'}
 {COLORS['CYAN']}• Private Server: {config['private_server'] or 'None'}
@@ -715,14 +776,14 @@ def main():
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v4.9
+       Koala Hub Auto-Rejoin v5.1
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
 • ADB-free for UGPhone
-• Reliable single launch attempt
+• Compatible with Roblox v2.683 and any version
+• Reliable launch and game join
+• Safe crash/kick/ban handling
 • Separate Game ID and Private Server input
-• Enhanced crash/kick detection
-• Optimized for rooted Android
 """)
     if not verify_roblox_installation():
         return

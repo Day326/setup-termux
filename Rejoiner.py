@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import urllib.parse
+import re
 from datetime import datetime
 from prettytable import PrettyTable
 
@@ -23,6 +24,7 @@ COLORS = {
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
 
+# Global variables
 roblox_process_count = 0
 last_launch_time = 0
 roblox_version = "Unknown"
@@ -226,14 +228,17 @@ def prepare_roblox(config):
 # ======================
 def get_main_activity():
     try:
-        output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep -A 1 'MAIN' | grep 'com.roblox.client'")
-        if output:
-            activity = output.split()[-1].split('/')[-1]
+        output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep -A 5 'android.intent.action.MAIN'")
+        print_formatted("INFO", f"Raw pm dump output: {output}")
+        match = re.search(r'com\.roblox\.client/(\.[A-Za-z0-9]+)', output)
+        if match:
+            activity = match.group(1)
             print_formatted("INFO", f"Detected main activity: {activity}")
             return activity
+        print_formatted("WARNING", "Could not parse main activity, falling back to .MainActivity")
         return ".MainActivity"
-    except:
-        print_formatted("WARNING", "Could not detect main activity, using default")
+    except Exception as e:
+        print_formatted("WARNING", f"Main activity detection error: {e}, using .MainActivity")
         return ".MainActivity"
 
 def is_game_joined(game_id, private_server):
@@ -308,10 +313,13 @@ def launch_game(config):
             print_formatted("WARNING", f"Main activity launch failed: {result}")
             result = run_shell_command(f"am start -n {ROBLOX_PACKAGE}/.MainActivity")
             if "Error" in result:
-                print_formatted("ERROR", f"Fallback launch failed: {result}")
-                return False
+                print_formatted("WARNING", f".MainActivity launch failed: {result}")
+                result = run_shell_command(f"monkey -p {ROBLOX_PACKAGE} 1")
+                if "Error" in result:
+                    print_formatted("ERROR", f"Monkey launch failed: {result}")
+                    return False
         roblox_process_count = 1
-        time.sleep(60)
+        time.sleep(80)
         if not is_roblox_running():
             print_formatted("ERROR", "Roblox failed to start")
             close_roblox(config)
@@ -488,7 +496,7 @@ def select_account(config):
 # GAME SETTINGS
 # ======================
 def set_game(config):
-    print_formatted("INFO", "Enter Game ID (e.g., 126884695634066):")
+    print_formatted("INFO", "Enter Game ID:")
     game_id = input("> ").strip()
     if game_id.lower() == "delete":
         delete_game_settings(config)
@@ -544,7 +552,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 200):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 120):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -704,7 +712,7 @@ def show_menu(config):
         os.system("clear")
         print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v5.1
+       Koala Hub Auto-Rejoin v5.2
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Current Settings:{COLORS['RESET']}
 {COLORS['CYAN']}• Roblox Version: {roblox_version}
@@ -771,15 +779,15 @@ def show_menu(config):
 
 def main():
     if not is_root_available():
-        print_formatted("ERROR", "Root access required. Ensure device is rooted (e.g., via Magisk).")
+        print_formatted("ERROR", "Root access required. Ensure device is rooted.")
         return
     config = load_config()
     print(f"""
 {COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v5.1
+       Koala Hub Auto-Rejoin v5.2
 ====================================={COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-• ADB-free for UGPhone
+• ADB-free for UGPhone/emulator
 • Compatible with Roblox v2.683 and any version
 • Reliable launch and game join
 • Safe crash/kick/ban handling

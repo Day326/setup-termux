@@ -6,7 +6,6 @@ import subprocess
 import urllib.parse
 import re
 from datetime import datetime
-from prettytable import PrettyTable
 
 # ======================
 # CONFIGURATION
@@ -18,13 +17,13 @@ COLORS = {
     "WARNING": "\033[93m",
     "ERROR": "\033[91m",
     "BOLD": "\033[1m",
-    "CYAN": "\033[96m"
+    "CYAN": "\033[96m",
+    "HEADER": "\033[95m"
 }
 
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
 
-# Global variables
 roblox_process_count = 0
 last_launch_time = 0
 roblox_version = "Unknown"
@@ -35,11 +34,14 @@ roblox_version = "Unknown"
 def print_formatted(level, message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     color = COLORS.get(level, COLORS["RESET"])
-    table = PrettyTable()
-    table.field_names = ["Timestamp", "Level", "Message"]
-    table.align = "l"
-    table.add_row([timestamp, level, message])
-    print(f"{color}{table}{COLORS['RESET']}")
+    prefix = {
+        "INFO": "INFO",
+        "SUCCESS": "OK",
+        "WARNING": "WARN",
+        "ERROR": "ERROR",
+        "HEADER": "===="
+    }.get(level, level)
+    print(f"{color}{timestamp} [{prefix}] {message}{COLORS['RESET']}")
 
 def is_root_available():
     try:
@@ -52,7 +54,7 @@ def run_shell_command(command, timeout=10):
     try:
         result = subprocess.run(["su", "-c", command], capture_output=True, text=True, timeout=timeout)
         if result.stderr:
-            print_formatted("WARNING", f"Command stderr: {result.stderr}")
+            print_formatted("WARNING", f"Command stderr: {result.stderr.strip()}")
         return result.stdout.strip()
     except Exception as e:
         print_formatted("ERROR", f"Command failed: {command} - {str(e)}")
@@ -64,7 +66,7 @@ def get_roblox_version():
         output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep versionName")
         if output:
             roblox_version = output.split("versionName=")[1].split()[0]
-            print_formatted("INFO", f"Detected Roblox version: {roblox_version}")
+            print_formatted("INFO", f"Roblox version: {roblox_version}")
         return roblox_version
     except:
         print_formatted("WARNING", "Could not detect Roblox version")
@@ -116,7 +118,7 @@ def save_config(config):
 def verify_roblox_installation():
     output = run_shell_command(f"pm list packages {ROBLOX_PACKAGE}")
     if ROBLOX_PACKAGE not in output:
-        print_formatted("ERROR", "Roblox is not installed. Install from Google Play or APK (v2.683+).")
+        print_formatted("ERROR", "Roblox not installed.")
         return False
     get_roblox_version()
     return True
@@ -144,7 +146,7 @@ def is_in_game_activity(activity):
     return "GameActivity" in activity or "ExperienceActivity" in activity or "SurfaceView" in activity
 
 def is_in_main_menu(activity):
-    return "MainActivity" in activity or "HomeActivity" in activity or "SplashActivity" in activity
+    return "MainActivity" in activity or "HomeActivity" in activity or "ActivitySplash" in activity
 
 def is_in_error_state(activity):
     error_states = ["ErrorActivity", "CrashActivity", "NotResponding", "ANR"]
@@ -230,12 +232,16 @@ def get_main_activity():
     try:
         output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep -A 5 'android.intent.action.MAIN'")
         print_formatted("INFO", f"Raw pm dump output: {output}")
-        match = re.search(r'com\.roblox\.client/(\.[A-Za-z0-9]+)', output)
+        match = re.search(r'com\.roblox\.client/(\.[A-Za-z0-9.]+)', output)
         if match:
             activity = match.group(1)
             print_formatted("INFO", f"Detected main activity: {activity}")
             return activity
-        print_formatted("WARNING", "Could not parse main activity, falling back to .MainActivity")
+        print_formatted("WARNING", "Could not parse main activity, trying .ActivitySplash")
+        output = run_shell_command(f"pm dump {ROBLOX_PACKAGE} | grep ActivitySplash")
+        if "ActivitySplash" in output:
+            return ".startup.ActivitySplash"
+        print_formatted("WARNING", "Could not find ActivitySplash, falling back to .MainActivity")
         return ".MainActivity"
     except Exception as e:
         print_formatted("WARNING", f"Main activity detection error: {e}, using .MainActivity")
@@ -300,13 +306,14 @@ def launch_game(config):
         time.sleep(20 - (current_time - last_launch_time))
     last_launch_time = current_time
     try:
+        print_formatted("HEADER", "Launch Sequence Started")
         if not close_roblox(config):
             print_formatted("ERROR", "Failed to close Roblox before launch")
             return False
         if not prepare_roblox(config):
             print_formatted("ERROR", "Failed to prepare Roblox")
             return False
-        print_formatted("INFO", "Launching Roblox...")
+        print_formatted("INFO", "Attempting to launch Roblox...")
         main_activity = get_main_activity()
         result = run_shell_command(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/{main_activity}")
         if "Error" in result:
@@ -314,21 +321,24 @@ def launch_game(config):
             result = run_shell_command(f"am start -n {ROBLOX_PACKAGE}/.MainActivity")
             if "Error" in result:
                 print_formatted("WARNING", f".MainActivity launch failed: {result}")
-                result = run_shell_command(f"monkey -p {ROBLOX_PACKAGE} 1")
+                result = run_shell_command(f"am start -n {ROBLOX_PACKAGE}/.startup.ActivitySplash")
                 if "Error" in result:
-                    print_formatted("ERROR", f"Monkey launch failed: {result}")
-                    return False
+                    print_formatted("WARNING", f".ActivitySplash launch failed: {result}")
+                    result = run_shell_command(f"monkey -p {ROBLOX_PACKAGE} 1")
+                    if "Error" in result:
+                        print_formatted("ERROR", f"Monkey launch failed: {result}")
+                        return False
         roblox_process_count = 1
-        time.sleep(80)
+        time.sleep(100)
         if not is_roblox_running():
             print_formatted("ERROR", "Roblox failed to start")
             close_roblox(config)
             return False
-        print_formatted("INFO", "Roblox started, preparing to join game...")
+        print_formatted("SUCCESS", "Roblox started, preparing to join game...")
         run_shell_command("input keyevent BACK")
         time.sleep(3)
         launch_url = build_launch_url(config["game_id"], config["private_server"])
-        print_formatted("INFO", f"Joining: {launch_url}")
+        print_formatted("INFO", f"Joining game: {launch_url}")
         for attempt in range(3):
             result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
             if "Error" not in result:
@@ -365,6 +375,7 @@ def launch_game(config):
             print_formatted("WARNING", "Failed to join game")
             close_roblox(config)
             return False
+        print_formatted("HEADER", "Launch Sequence Completed")
         return True
     except Exception as e:
         print_formatted("ERROR", f"Launch error: {e}")
@@ -538,9 +549,9 @@ def set_check_delay(config):
 
 def set_check_method(config):
     print_formatted("INFO", "Select check method:")
-    print(f"{COLORS['CYAN']}1:{COLORS['RESET']} Executor UI only")
-    print(f"{COLORS['CYAN']}2:{COLORS['RESET']} Roblox running only")
-    print(f"{COLORS['CYAN']}3:{COLORS['RESET']} Both (recommended)")
+    print(f"{COLORS['CYAN']}1: Executor UI only{COLORS['RESET']}")
+    print(f"{COLORS['CYAN']}2: Roblox running only{COLORS['RESET']}")
+    print(f"{COLORS['CYAN']}3: Both (recommended){COLORS['RESET']}")
     choice = input("> ").strip()
     methods = {"1": "executor", "2": "roblox", "3": "both"}
     if choice in methods:
@@ -608,7 +619,7 @@ def is_account_logged_in(user_id):
 def check_status(config):
     if not verify_roblox_installation():
         return
-    print_formatted("INFO", "Running status checks...")
+    print_formatted("HEADER", "Status Check")
     if config["check_method"] in ["executor", "both"]:
         executor_running = is_executor_running()
         print_formatted("SUCCESS" if executor_running else "WARNING", 
@@ -631,7 +642,7 @@ def check_status(config):
         logged_in = is_account_logged_in(config["active_account"])
         print_formatted("SUCCESS" if logged_in else "WARNING", 
                         f"Account: {'Logged in' if logged_in else 'Not logged in'}")
-    print_formatted("INFO", "Status check complete")
+    print_formatted("HEADER", "Status Check Complete")
 
 # ======================
 # AUTO-REJOIN
@@ -646,7 +657,7 @@ def should_rejoin(config):
 
 def auto_rejoin(config):
     if not is_root_available():
-        print_formatted("ERROR", "Root access required for auto-rejoin.")
+        print_formatted("ERROR", "Root access required for auto-rejoin")
         return
     if not config["active_account"]:
         print_formatted("ERROR", "No active account selected")
@@ -656,7 +667,7 @@ def auto_rejoin(config):
         return
     if not verify_roblox_installation():
         return
-    print_formatted("INFO", f"Starting auto-rejoin for {config['active_account']}")
+    print_formatted("HEADER", f"Auto-Rejoin Started for {config['active_account']}")
     print_formatted("INFO", "Press Ctrl+C to stop")
     try:
         retry_count = 0
@@ -664,13 +675,13 @@ def auto_rejoin(config):
         cooldown = False
         while True:
             if cooldown:
-                print_formatted("WARNING", f"In cooldown period - waiting {config.get('cooldown_period', 120)} seconds")
+                print_formatted("WARNING", f"In cooldown: waiting {config.get('cooldown_period', 120)}s")
                 time.sleep(config.get("cooldown_period", 120))
                 cooldown = False
                 roblox_process_count = 0
             should, reason = should_rejoin(config)
             if should:
-                print_formatted("WARNING", f"Rejoin conditions met - reason: {reason}")
+                print_formatted("WARNING", f"Rejoin triggered: {reason}")
                 if not close_roblox(config):
                     retry_count += 1
                     time.sleep(config.get("retry_delay", 15))
@@ -686,7 +697,7 @@ def auto_rejoin(config):
                     print_formatted("WARNING", f"Rejoin failed (attempt {retry_count}/{max_retries})")
             else:
                 retry_count = 0
-                print_formatted("SUCCESS", "Roblox is running and in correct game")
+                print_formatted("SUCCESS", "Roblox is running and in game")
             if retry_count >= max_retries:
                 print_formatted("ERROR", f"Max retries ({max_retries}) reached. Entering cooldown...")
                 cooldown = True
@@ -711,37 +722,36 @@ def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v5.2
-====================================={COLORS['RESET']}
-{COLORS['BOLD']}Current Settings:{COLORS['RESET']}
-{COLORS['CYAN']}• Roblox Version: {roblox_version}
-{COLORS['CYAN']}• Account: {config['active_account'] or 'None'}
-{COLORS['CYAN']}• Game ID: {config['game_id'] or 'None'}
-{COLORS['CYAN']}• Private Server: {config['private_server'] or 'None'}
-{COLORS['CYAN']}• Check Delay: {config['check_delay']}s
-{COLORS['CYAN']}• Check Method: {config['check_method']}
-{COLORS['CYAN']}• Launch Delay: {config['launch_delay']}s
-{COLORS['CYAN']}• Retry Delay: {config.get('retry_delay', 15)}s
-{COLORS['CYAN']}• Cooldown Period: {config.get('cooldown_period', 120)}s
-{COLORS['CYAN']}• Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
-{COLORS['CYAN']}• Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.3 ===
+{COLORS['RESET']}
+{COLORS['BOLD']}Settings:{COLORS['RESET']}
+  Roblox Version: {roblox_version}
+  Account: {config['active_account'] or 'None'}
+  Game ID: {config['game_id'] or 'None'}
+  Private Server: {config['private_server'] or 'None'}
+  Check Delay: {config['check_delay']}s
+  Check Method: {config['check_method']}
+  Launch Delay: {config['launch_delay']}s
+  Retry Delay: {config.get('retry_delay', 15)}s
+  Cooldown Period: {config.get('cooldown_period', 120)}s
+  Game Validation: {'ON' if config.get('game_validation', True) else 'OFF'}
+  Crash Protection: {'ON' if config.get('minimize_crashes', True) else 'OFF'}
 
-{COLORS['BOLD']}Menu Options:{COLORS['RESET']}
-{COLORS['CYAN']}1:{COLORS['RESET']} Add Account
-{COLORS['CYAN']}2:{COLORS['RESET']} Delete Account
-{COLORS['CYAN']}3:{COLORS['RESET']} Select Account
-{COLORS['CYAN']}4:{COLORS['RESET']} Set Game/Server
-{COLORS['CYAN']}5:{COLORS['RESET']} Set Check Delay
-{COLORS['CYAN']}6:{COLORS['RESET']} Set Check Method
-{COLORS['CYAN']}7:{COLORS['RESET']} Set Launch Delay
-{COLORS['CYAN']}8:{COLORS['RESET']} Set Retry Delay
-{COLORS['CYAN']}9:{COLORS['RESET']} Toggle Game Validation
-{COLORS['CYAN']}10:{COLORS['RESET']} Toggle Crash Protection
-{COLORS['CYAN']}11:{COLORS['RESET']} Check Status
-{COLORS['CYAN']}12:{COLORS['RESET']} Start Auto-Rejoin
-{COLORS['CYAN']}13:{COLORS['RESET']} Delete Game ID/Server
-{COLORS['CYAN']}14:{COLORS['RESET']} Exit
+{COLORS['BOLD']}Options:{COLORS['RESET']}
+  {COLORS['CYAN']}1:{COLORS['RESET']} Add Account
+  {COLORS['CYAN']}2:{COLORS['RESET']} Delete Account
+  {COLORS['CYAN']}3:{COLORS['RESET']} Select Account
+  {COLORS['CYAN']}4:{COLORS['RESET']} Set Game/Server
+  {COLORS['CYAN']}5:{COLORS['RESET']} Set Check Delay
+  {COLORS['CYAN']}6:{COLORS['RESET']} Set Check Method
+  {COLORS['CYAN']}7:{COLORS['RESET']} Set Launch Delay
+  {COLORS['CYAN']}8:{COLORS['RESET']} Set Retry Delay
+  {COLORS['CYAN']}9:{COLORS['RESET']} Toggle Game Validation
+  {COLORS['CYAN']}10:{COLORS['RESET']} Toggle Crash Protection
+  {COLORS['CYAN']}11:{COLORS['RESET']} Check Status
+  {COLORS['CYAN']}12:{COLORS['RESET']} Start Auto-Rejoin
+  {COLORS['CYAN']}13:{COLORS['RESET']} Delete Game ID/Server
+  {COLORS['CYAN']}14:{COLORS['RESET']} Exit
 """)
         choice = input(f"{COLORS['CYAN']}> {COLORS['RESET']}").strip()
         if choice == "1":
@@ -783,15 +793,14 @@ def main():
         return
     config = load_config()
     print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=====================================
-       Koala Hub Auto-Rejoin v5.2
-====================================={COLORS['RESET']}
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.3 ===
+{COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-• ADB-free for UGPhone/emulator
-• Compatible with Roblox v2.683 and any version
-• Reliable launch and game join
-• Safe crash/kick/ban handling
-• Separate Game ID and Private Server input
+  - ADB-free for UGPhone/emulator
+  - Compatible with Roblox v2.683+
+  - Reliable launch and game join
+  - Safe crash/kick/ban handling
+  - Clean console interface
 """)
     if not verify_roblox_installation():
         return

@@ -23,7 +23,6 @@ COLORS = {
 
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
-CHROME_PACKAGE = "com.android.chrome"
 
 # Global variables
 roblox_process_count = 0
@@ -83,7 +82,7 @@ def load_config():
         "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
-        "launch_delay": 400,  # Increased to 400s
+        "launch_delay": 300,
         "retry_delay": 15,
         "force_kill_delay": 10,
         "minimize_crashes": True,
@@ -290,12 +289,12 @@ def build_launch_url(game_id, private_server):
         if private_server:
             code = extract_private_server_code(private_server)
             if code:
-                return f"https://www.roblox.com/games/{game_id}?privateServerLinkCode={code}"
+                return f"roblox://placeID={game_id}&privateServerLinkCode={code}"
             print_formatted("WARNING", "No private server code found, using game ID")
-        return f"https://www.roblox.com/games/{game_id}"
+        return f"roblox://placeID={game_id}"
     except Exception as e:
         print_formatted("ERROR", f"URL build error: {e}")
-        return f"https://www.roblox.com/games/{game_id}"
+        return f"roblox://placeID={game_id}"
 
 def is_account_logged_in(user_id):
     try:
@@ -326,31 +325,22 @@ def launch_game(config):
         if not prepare_roblox(config):
             print_formatted("ERROR", "Failed to prepare Roblox")
             return False
-        print_formatted("INFO", "Attempting to launch Roblox...")
+        print_formatted("INFO", "Attempting to launch Roblox with game ID...")
         main_activity = get_main_activity()
-        # Primary launch
-        result = run_shell_command(f"am start --user 0 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/{main_activity}")
+        # Direct deep link launch
+        launch_url = build_launch_url(config["game_id"], config["private_server"])
+        result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{launch_url}' -n {ROBLOX_PACKAGE}/{main_activity}")
         print_formatted("INFO", f"Launch result: {result}")
         if "Error" in result:
-            print_formatted("WARNING", f"Main activity launch failed: {result}")
-            # Fallback 1: .MainActivity
-            result = run_shell_command(f"am start --user 0 -n {ROBLOX_PACKAGE}/.MainActivity")
-            print_formatted("INFO", f"Fallback 1 result: {result}")
+            print_formatted("WARNING", f"Deep link launch failed: {result}")
+            # Fallback to main activity
+            result = run_shell_command(f"am start --user 0 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/{main_activity}")
+            print_formatted("INFO", f"Fallback result: {result}")
             if "Error" in result:
-                print_formatted("WARNING", f".MainActivity launch failed: {result}")
-                # Fallback 2: .ActivitySplash
-                result = run_shell_command(f"am start --user 0 -n {ROBLOX_PACKAGE}/.startup.ActivitySplash")
-                print_formatted("INFO", f"Fallback 2 result: {result}")
-                if "Error" in result:
-                    print_formatted("WARNING", f".ActivitySplash launch failed: {result}")
-                    # Fallback 3: monkey
-                    result = run_shell_command(f"monkey -p {ROBLOX_PACKAGE} 1")
-                    print_formatted("INFO", f"Fallback 3 result: {result}")
-                    if "Error" in result:
-                        print_formatted("ERROR", f"Monkey launch failed: {result}")
-                        return False
+                print_formatted("ERROR", f"Failed to launch Roblox: {result}")
+                return False
         roblox_process_count = 1
-        print_formatted("INFO", "Waiting for Roblox to load...")
+        print_formatted("INFO", "Waiting for Roblox to load and join game...")
         time.sleep(120)  # Initial delay
         if not is_roblox_running():
             print_formatted("ERROR", "Roblox failed to start")
@@ -359,24 +349,6 @@ def launch_game(config):
         print_formatted("SUCCESS", "Roblox started, checking login...")
         if not is_account_logged_in(config["active_account"]):
             print_formatted("WARNING", "Manual login may be required")
-        run_shell_command("input keyevent BACK")
-        time.sleep(5)
-        game_url = build_launch_url(config["game_id"], config["private_server"])
-        print_formatted("INFO", f"Attempting to join game via browser: {game_url}")
-        joined = False
-        for attempt in range(20):  # Browser retries
-            result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{game_url}' -n {CHROME_PACKAGE}/.Main")
-            print_formatted("INFO", f"Browser result (attempt {attempt + 1}): {result}")
-            if "Error" not in result:
-                print_formatted("SUCCESS", f"Browser join attempt {attempt + 1} succeeded")
-                joined = True
-                break
-            print_formatted("WARNING", f"Browser join attempt {attempt + 1} failed: {result}")
-            time.sleep(20)
-        if not joined:
-            print_formatted("ERROR", "Failed to join game via browser")
-            close_roblox(config)
-            return False
         loaded = False
         for i in range(config['launch_delay'] // 5):
             time.sleep(5)
@@ -584,7 +556,7 @@ def set_check_method(config):
 
 def set_launch_delay(config):
     try:
-        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 400):")
+        print_formatted("INFO", "Enter launch delay (seconds, min 10, default 300):")
         delay = int(input("> ").strip())
         if delay < 10:
             print_formatted("ERROR", "Minimum delay is 10 seconds")
@@ -737,7 +709,7 @@ def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.9 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v6.0 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Settings:{COLORS['RESET']}
   Roblox Version: {roblox_version}
@@ -808,11 +780,11 @@ def main():
         return
     config = load_config()
     print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.9 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v6.0 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
   - Preserves login sessions
-  - Browser-based game join
+  - Direct deep link to join game (no taps)
   - Clean console interface
   - Robust error logging
 """)

@@ -330,23 +330,28 @@ def launch_game(config):
         main_activity = get_main_activity()
         # Primary launch
         result = run_shell_command(f"am start --user 0 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n {ROBLOX_PACKAGE}/{main_activity}")
+        print_formatted("INFO", f"Launch result: {result}")
         if "Error" in result:
             print_formatted("WARNING", f"Main activity launch failed: {result}")
             # Fallback 1: .MainActivity
             result = run_shell_command(f"am start --user 0 -n {ROBLOX_PACKAGE}/.MainActivity")
+            print_formatted("INFO", f"Fallback 1 result: {result}")
             if "Error" in result:
                 print_formatted("WARNING", f".MainActivity launch failed: {result}")
                 # Fallback 2: .ActivitySplash
                 result = run_shell_command(f"am start --user 0 -n {ROBLOX_PACKAGE}/.startup.ActivitySplash")
+                print_formatted("INFO", f"Fallback 2 result: {result}")
                 if "Error" in result:
                     print_formatted("WARNING", f".ActivitySplash launch failed: {result}")
                     # Fallback 3: monkey
                     result = run_shell_command(f"monkey -p {ROBLOX_PACKAGE} 1")
+                    print_formatted("INFO", f"Fallback 3 result: {result}")
                     if "Error" in result:
                         print_formatted("ERROR", f"Monkey launch failed: {result}")
                         return False
         roblox_process_count = 1
-        time.sleep(100)  # Initial wait for emulator
+        print_formatted("INFO", "Waiting for Roblox to load...")
+        time.sleep(120)  # Increased initial delay
         if not is_roblox_running():
             print_formatted("ERROR", "Roblox failed to start")
             close_roblox(config)
@@ -355,64 +360,50 @@ def launch_game(config):
         if not is_account_logged_in(config["active_account"]):
             print_formatted("WARNING", "Manual login may be required")
         run_shell_command("input keyevent BACK")
-        time.sleep(3)
+        time.sleep(5)
         launch_url = build_launch_url(config["game_id"], config["private_server"])
-        print_formatted("INFO", f"Joining game: {launch_url}")
+        print_formatted("INFO", f"Attempting to join game: {launch_url}")
         joined = False
-        for attempt in range(15):  # Increased retries
-            result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{launch_url}'")
-            print_formatted("INFO", f"Deep link result (attempt {attempt + 1}): {result}")
-            if "Error" not in result:
-                print_formatted("SUCCESS", f"Game join attempt {attempt + 1} succeeded")
-                joined = True
-                break
-            print_formatted("WARNING", f"Game join attempt {attempt + 1} failed: {result}")
-            # Fallback: try HTTPS URL
-            if launch_url.startswith("roblox://"):
-                https_url = launch_url.replace("roblox://", "https://www.roblox.com/games/")
-                result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{https_url}'")
-                print_formatted("INFO", f"HTTPS result (attempt {attempt + 1}): {result}")
+        # Skip deep link if not supported, go straight to browser
+        if config["game_id"]:
+            game_url = f"https://www.roblox.com/games/{config['game_id']}"
+            for attempt in range(20):  # Increased retries
+                result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{game_url}' -n {CHROME_PACKAGE}/.Main")
+                print_formatted("INFO", f"Browser result (attempt {attempt + 1}): {result}")
                 if "Error" not in result:
-                    print_formatted("SUCCESS", f"HTTPS join attempt {attempt + 1} succeeded")
+                    print_formatted("SUCCESS", f"Browser join attempt {attempt + 1} succeeded")
                     joined = True
                     break
-            print_formatted("WARNING", f"HTTPS join attempt {attempt + 1} failed: {result}")
-            time.sleep(30)  # Increased delay
-        if not joined:
-            print_formatted("WARNING", "Falling back to browser or manual join...")
-            if config["game_id"]:
-                game_url = f"https://www.roblox.com/games/{config['game_id']}"
-                result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{game_url}' -n {CHROME_PACKAGE}/.Main")
-                print_formatted("INFO", f"Browser result (game URL): {result}")
-                if "Error" not in result:
-                    print_formatted("SUCCESS", "Opened browser with game URL")
-                    time.sleep(10)
-                    run_shell_command("input tap 540 960")  # Play button in browser
-                    time.sleep(10)
-                else:
-                    print_formatted("WARNING", "Browser launch for game URL failed")
-            if config["private_server"]:
-                result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{config['private_server']}' -n {CHROME_PACKAGE}/.Main")
-                print_formatted("INFO", f"Browser result (PS link): {result}")
-                if "Error" not in result:
-                    print_formatted("SUCCESS", "Opened browser with PS link")
-                    time.sleep(10)
-                    run_shell_command("input tap 540 960")  # Play button in browser
-                    time.sleep(10)
-                else:
-                    print_formatted("WARNING", "Browser launch for PS link failed")
-            run_shell_command("input keyevent 66")  # Simulate Enter key
-            time.sleep(5)
+                print_formatted("WARNING", f"Browser join attempt {attempt + 1} failed: {result}")
+                time.sleep(20)  # Increased delay
+            if joined:
+                time.sleep(10)
+                run_shell_command("input tap 540 960")  # Play button
+                time.sleep(10)
+                run_shell_command("input tap 600 600")  # Confirmation
+                time.sleep(10)
+            else:
+                print_formatted("WARNING", "Browser join failed, falling back to app taps...")
+        if config["private_server"]:
+            result = run_shell_command(f"am start --user 0 -a android.intent.action.VIEW -d '{config['private_server']}' -n {CHROME_PACKAGE}/.Main")
+            print_formatted("INFO", f"PS Browser result: {result}")
+            if "Error" not in result:
+                print_formatted("SUCCESS", "Opened browser with PS link")
+                time.sleep(10)
+                run_shell_command("input tap 540 960")  # Play button
+                time.sleep(10)
+            else:
+                print_formatted("WARNING", "PS Browser launch failed")
         # Enhanced UI navigation
         run_shell_command("input tap 500 500")  # General tap
         time.sleep(10)
         run_shell_command("input tap 540 960")  # Play button
         time.sleep(10)
-        run_shell_command("input tap 600 600")  # Confirmation tap
+        run_shell_command("input tap 600 600")  # Confirmation
         time.sleep(10)
-        run_shell_command("input tap 540 960")  # Second Play attempt
+        run_shell_command("input tap 480 900")  # Alternative Play
         time.sleep(10)
-        run_shell_command("input tap 300 1200")  # Server selection or join
+        run_shell_command("input tap 600 1000")  # Join/Server selection
         time.sleep(10)
         loaded = False
         for i in range(config['launch_delay'] // 5):
@@ -685,7 +676,7 @@ def check_status(config):
             in_game = is_game_joined(config["game_id"], config["private_server"])
             state = check_roblox_state(config["game_id"], config["private_server"])
             print_formatted("SUCCESS" if in_game and state == "running" else "WARNING",
-                            f"Game status: {'In game' if in_game and state == 'running' else f'Not in game or {state}'}")
+                            f"Game status: {'In game' if in_game and state == "running" else f'Not in game or {state}'}")
             if is_in_main_menu(activity):
                 print_formatted("WARNING", "Roblox is in main menu")
             if is_in_error_state(activity):
@@ -774,7 +765,7 @@ def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.7 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.8 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Settings:{COLORS['RESET']}
   Roblox Version: {roblox_version}
@@ -845,13 +836,14 @@ def main():
         return
     config = load_config()
     print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.7 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.8 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
   - Preserves login sessions
   - Enhanced game join with browser fallback
   - Clean console interface
   - Improved UI automation for game join
+  - Robust error logging
 """)
     if not verify_roblox_installation():
         return

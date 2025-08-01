@@ -23,6 +23,7 @@ COLORS = {
 
 CONFIG_FILE = "/sdcard/roblox_config.json"
 ROBLOX_PACKAGE = "com.roblox.client"
+CHROME_PACKAGE = "com.android.chrome"
 
 # Global variables
 roblox_process_count = 0
@@ -352,7 +353,7 @@ def launch_game(config):
         launch_url = build_launch_url(config["game_id"], config["private_server"])
         print_formatted("INFO", f"Joining game: {launch_url}")
         joined = False
-        for attempt in range(7):
+        for attempt in range(10):
             result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{launch_url}'")
             print_formatted("INFO", f"Deep link result (attempt {attempt + 1}): {result}")
             if "Error" not in result:
@@ -369,13 +370,21 @@ def launch_game(config):
                     joined = True
                     break
             print_formatted("WARNING", f"HTTPS join attempt {attempt + 1} failed: {result}")
-            time.sleep(15)
+            time.sleep(20)
         if not joined:
-            print_formatted("WARNING", "Falling back to manual join trigger...")
+            print_formatted("WARNING", "Falling back to browser or manual join...")
+            if config["private_server"]:
+                result = run_shell_command(f"am start -a android.intent.action.VIEW -d '{config['private_server']}' -n {CHROME_PACKAGE}/.Main")
+                print_formatted("INFO", f"Browser result: {result}")
+                if "Error" not in result:
+                    print_formatted("SUCCESS", "Opened browser with PS link")
+                else:
+                    print_formatted("WARNING", "Browser launch failed")
             run_shell_command("input keyevent 66")
             time.sleep(5)
-        # Simulate taps to bypass UI stalls
         run_shell_command("input tap 500 500")
+        time.sleep(5)
+        run_shell_command("input tap 540 960")
         time.sleep(5)
         run_shell_command("input tap 600 600")
         time.sleep(5)
@@ -531,7 +540,7 @@ def select_account(config):
 # GAME SETTINGS
 # ======================
 def set_game(config):
-    print_formatted("INFO", "Enter Game ID (e.g., 126884695634066):")
+    print_formatted("INFO", "Enter Game ID:")
     game_id = input("> ").strip()
     if game_id.lower() == "delete":
         delete_game_settings(config)
@@ -539,11 +548,12 @@ def set_game(config):
     if not validate_game_id(game_id, config):
         return
     config["game_id"] = game_id
-    print_formatted("INFO", "Enter Private Server Link (leave empty if none):")
+    print_formatted("INFO", "Enter Private Server Link (leave empty if none.:")
     ps_link = input("> ").strip()
     if ps_link:
-        if validate_private_server(ps_link, game_id):
+        if ps_link.startswith(("http://", "https://", "roblox://")) and validate_private_server(ps_link, game_id):
             config["private_server"] = ps_link
+            print_formatted("SUCCESS", f"Private server link saved: {ps_link}")
         else:
             config["private_server"] = ""
             print_formatted("WARNING", "Invalid private server link, using game ID only")
@@ -740,7 +750,7 @@ def show_menu(config):
     while True:
         os.system("clear")
         print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.5 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.6 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Settings:{COLORS['RESET']}
   Roblox Version: {roblox_version}
@@ -807,17 +817,15 @@ def show_menu(config):
 
 def main():
     if not is_root_available():
-        print_formatted("ERROR", "Root access required. Ensure device is rooted (e.g., via Magisk)")
+        print_formatted("ERROR", "Root access required. Ensure device is rooted.")
         return
     config = load_config()
     print(f"""
-{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.5 ===
+{COLORS['BOLD']}{COLORS['CYAN']}=== Koala Hub Auto-Rejoin v5.6 ===
 {COLORS['RESET']}
 {COLORS['BOLD']}Features:{COLORS['RESET']}
-  - ADB-free for UGPhone/emulator
-  - Compatible with Roblox v2.683+
   - Preserves login sessions
-  - Enhanced game join with retries
+  - Enhanced game join with browser fallback
   - Clean console interface
 """)
     if not verify_roblox_installation():

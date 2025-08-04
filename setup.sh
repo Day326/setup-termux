@@ -58,7 +58,3 @@ echo "Rejoiner.py downloaded to /sdcard/Download"
 if ! su -c "pm list packages com.roblox.client" | grep -q "com.roblox.client"; then
     echo "Warning: Roblox is not installed."
 fi
-
-echo "Setup complete. Run 'cd /sdcard/Download && python Rejoiner.py' to start."
-echo "Ensure Roblox is installed and device is rooted."
-echo "To update Rejoiner.py, edit in VSCode and replace /sdcard/Download/Rejoiner.py."

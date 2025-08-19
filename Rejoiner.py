@@ -288,15 +288,18 @@ def extract_private_server_code(link):
 
 def build_launch_url(game_id, private_server):
     try:
+        base = "roblox://experiences/start?placeId="
+        url = base + str(game_id)
         if private_server:
             code = extract_private_server_code(private_server)
             if code:
-                return f"roblox://placeID={game_id}&privateServerLinkCode={code}"
-            print_formatted("WARNING", "No private server code found, using game ID")
-        return f"https://www.roblox.com/games/{game_id}"  # Fallback to web URL
+                url += "&privateServerLinkCode=" + code
+                return url
+            print_formatted("WARNING", "No private server code found. Use game ID only.")
+        return url
     except Exception as e:
         print_formatted("ERROR", f"URL build error: {e}")
-        return f"roblox://placeID={game_id}"
+        return base + str(game_id)
 
 def is_account_logged_in(user_id):
     try:
@@ -341,7 +344,7 @@ def launch_game(config):
                 return False
         roblox_process_count = 1
         print_formatted("INFO", "Waiting for Roblox to load and join game...")
-        time.sleep(180)  # Increased to 180 seconds
+        time.sleep(180)
         if not is_roblox_running():
             print_formatted("ERROR", "Roblox failed to start")
             close_roblox(config)
@@ -413,7 +416,7 @@ def validate_private_server(link, game_id):
             parts = link.split("/games/")[1].split("/")
             place_id = parts[0]
         else:
-            place_id = link.split("placeID=")[1].split("&")[0] if "placeID=" in link else game_id
+            place_id = link.split("placeId=")[1].split("&")[0] if "placeId=" in link else game_id
         if place_id != str(game_id):
             print_formatted("ERROR", "Private server Game ID does not match provided Game ID")
             return False

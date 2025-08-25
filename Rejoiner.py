@@ -2,7 +2,7 @@
 """
 Enhanced Roblox Automation Tool (Rejoiner.py)
 Supports: UGPHONE, VSPHONE, REDFINGER, Standard Android/Emulators
-Author: Optimized for reliable game joining and error detection
+Author: Optimized for reliable deep link joining
 """
 
 import requests
@@ -286,19 +286,23 @@ def verify_roblox_installation():
         print_formatted("ERROR", f"Roblox verification error: {e}")
         return False
 
-def is_roblox_running():
+def is_roblox_running(retries=3, delay=2):
     try:
-        process_output = run_shell_command(f"ps -A | grep {ROBLOX_PACKAGE} | grep -v grep", platform_info=platform_info)
-        process_running = bool(process_output.strip())
-        activity_output = run_shell_command(f"dumpsys activity | grep {ROBLOX_PACKAGE}", platform_info=platform_info)
-        activity_running = ROBLOX_PACKAGE in activity_output and "mResumedActivity" in activity_output
-        if process_running and activity_running:
-            print_formatted("INFO", "Roblox process and activity confirmed running")
-        elif process_running:
-            print_formatted("INFO", "Roblox process running but activity not resumed")
-        elif activity_running:
-            print_formatted("INFO", "Roblox activity detected but no process")
-        return process_running and activity_running
+        for attempt in range(retries):
+            process_output = run_shell_command(f"ps -A | grep {ROBLOX_PACKAGE} | grep -v grep", platform_info=platform_info)
+            process_running = bool(process_output.strip())
+            activity_output = run_shell_command(f"dumpsys activity | grep {ROBLOX_PACKAGE}", platform_info=platform_info)
+            activity_running = ROBLOX_PACKAGE in activity_output and "mResumedActivity" in activity_output
+            if process_running and activity_running:
+                print_formatted("INFO", "Roblox process and activity confirmed running")
+                return True
+            elif process_running:
+                print_formatted("INFO", f"Roblox process running, attempt {attempt+1}/{retries}, retrying...")
+            elif activity_running:
+                print_formatted("INFO", f"Roblox activity detected, attempt {attempt+1}/{retries}, retrying...")
+            time.sleep(delay)
+        print_formatted("INFO", "Roblox not fully running after retries")
+        return False
     except Exception as e:
         print_formatted("ERROR", f"Process check error: {str(e)}")
         return False
@@ -388,11 +392,11 @@ def launch_via_deep_link(game_id, private_server=''):
         url = build_game_url(game_id, private_server)
         command = f'am start -a android.intent.action.VIEW -d "{url}"'
         result = run_shell_command(command, platform_info=platform_info)
-        time.sleep(10)  # Increased wait for app to initialize
+        time.sleep(20)  # Increased to 20 seconds for proper joining
         if is_roblox_running():
             print_formatted("SUCCESS", "Roblox launched via deep link")
             return True
-        print_formatted("WARNING", "Deep link launched but Roblox not running")
+        print_formatted("WARNING", "Deep link launched but Roblox not running after extended wait")
         return False
     except Exception as e:
         print_formatted("ERROR", f"Deep link launch failed: {str(e)}")
@@ -408,7 +412,7 @@ def launch_via_intent(game_id, private_server=''):
         url = build_game_url(game_id, private_server)
         intent_command = f'am start -a android.intent.action.VIEW -d "{url}" {ROBLOX_PACKAGE}'
         result = run_shell_command(intent_command, platform_info=platform_info)
-        time.sleep(10)
+        time.sleep(15)
         if is_roblox_running():
             print_formatted("SUCCESS", "Roblox launched via intent")
             return True
@@ -554,7 +558,7 @@ def wait_for_game_join(config, timeout=60):
     while time.time() - start_time < timeout:
         if is_in_game(game_id, private_server):
             return True
-        time.sleep(2)
+        time.sleep(5)  # Increased to 5 seconds for better join detection
     print_formatted("INFO", "Game join timeout, checking error states")
     error_state = check_error_states()
     if error_state:

@@ -243,7 +243,7 @@ def run_shell_command(command, timeout=10, platform_info=None):
     """Execute shell command with platform-specific handling"""
     try:
         if platform_info and platform_info.get('use_adb') and platform_info.get('shell_prefix'):
-            full_command = [platform_info['shell_prefix'].split()[0]] + platform_info['shell_prefix'].split()[1:] + [command]
+            full_command = platform_info['shell_prefix'].split() + [command]
         else:
             full_command = command.split()
         
@@ -263,12 +263,9 @@ def run_shell_command(command, timeout=10, platform_info=None):
 def load_config():
     """Load configuration from JSON file"""
     default_config = {
-        "accounts": [],
         "game_id": "",
         "private_server": "",
         "check_delay": 45,
-        "active_account": "",
-        "check_method": "both",
         "max_retries": 3,
         "game_validation": True,
         "launch_delay": 300,
@@ -467,6 +464,7 @@ def launch_via_deep_link(game_id, private_server=''):
         # Launch using am start
         command = f'am start -a android.intent.action.VIEW -d "{url}"'
         result = run_shell_command(command, platform_info=platform_info)
+        print_formatted("INFO", f"Deep link launch result: {result}")
         
         time.sleep(5)
         return is_roblox_running()
@@ -483,13 +481,15 @@ def launch_via_intent(game_id, private_server=''):
         # First start Roblox main activity
         main_activity = get_main_activity()
         command = f'am start -n {ROBLOX_PACKAGE}/{main_activity}'
-        run_shell_command(command, platform_info=platform_info)
+        result_main = run_shell_command(command, platform_info=platform_info)
+        print_formatted("INFO", f"Main activity launch result: {result_main}")
         time.sleep(5)
         
         # Then send the game URL as an intent
         url = build_game_url(game_id, private_server)
-        intent_command = f'am start -a android.intent.action.VIEW -d "{url}" {ROBLOX_PACKAGE}'
-        result = run_shell_command(intent_command, platform_info=platform_info)
+        intent_command = f'am start -a android.intent.action.VIEW -d "{url}" -n {ROBLOX_PACKAGE}/{main_activity}'
+        result_intent = run_shell_command(intent_command, platform_info=platform_info)
+        print_formatted("INFO", f"Intent launch result: {result_intent}")
         
         time.sleep(5)
         return is_roblox_running()
@@ -498,349 +498,15 @@ def launch_via_intent(game_id, private_server=''):
         print_formatted("ERROR", f"Intent launch failed: {str(e)}")
         return False
 
-def launch_via_ui_automation(game_id, private_server=''):
-    """Launch game using UI automation"""
-    try:
-        print_formatted("INFO", f"Launching via UI automation: {game_id}")
-        
-        # Start Roblox
-        main_activity = get_main_activity()
-        command = f'am start -n {ROBLOX_PACKAGE}/{main_activity}'
-        run_shell_command(command, platform_info=platform_info)
-        time.sleep(10)  # Wait for app to load
-        
-        # Navigate using UI automation
-        return navigate_to_game_ui(game_id, private_server)
-        
-    except Exception as e:
-        print_formatted("ERROR", f"UI automation launch failed: {str(e)}")
-        return False
-
-def launch_via_browser_redirect(game_id, private_server=''):
-    """Launch game via browser redirect"""
-    try:
-        print_formatted("INFO", f"Launching via browser redirect: {game_id}")
-        
-        # Create web URL that redirects to Roblox
-        if private_server:
-            web_url = f"https://www.roblox.com/games/{game_id}?privateServerLinkCode={extract_private_server_code(private_server)}"
-        else:
-            web_url = f"https://www.roblox.com/games/{game_id}"
-        
-        # Open in browser
-        command = f'am start -a android.intent.action.VIEW -d "{web_url}"'
-        run_shell_command(command, platform_info=platform_info)
-        time.sleep(10)
-        
-        # Look for "Play" button and tap it
-        return tap_play_button()
-        
-    except Exception as e:
-        print_formatted("ERROR", f"Browser redirect launch failed: {str(e)}")
-        return False
-
-def navigate_to_game_ui(game_id, private_server=''):
-    """Navigate to game using UI automation"""
-    try:
-        print_formatted("INFO", "Starting UI navigation to game...")
-        time.sleep(10)  # Wait for Roblox to fully load
-        
-        # Try different navigation methods
-        methods = [
-            navigate_via_search,
-            navigate_via_url_bar,
-            navigate_via_menu
-        ]
-        
-        for method in methods:
-            try:
-                if method(game_id, private_server):
-                    return True
-            except Exception as e:
-                print_formatted("WARNING", f"Navigation method {method.__name__} failed: {str(e)}")
-                continue
-        
-        return False
-    except Exception as e:
-        print_formatted("ERROR", f"UI navigation failed: {str(e)}")
-        return False
-
-def navigate_via_search(game_id, private_server=''):
-    """Navigate using search functionality - CAREFUL with screen taps"""
-    try:
-        print_formatted("INFO", "🔍 Attempting navigation via search (reduced tapping)...")
-        
-        # Wait for UI to stabilize first
-        time.sleep(5)
-        
-        # Try fewer, more targeted search positions
-        search_positions = [
-            (540, 200),   # Top-center search (most common)
-            (540, 150),   # Slightly higher
-        ]
-        
-        for attempt, (x, y) in enumerate(search_positions):
-            print_formatted("INFO", f"🎯 Search attempt {attempt + 1}: tapping ({x}, {y})")
-            
-            run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-            time.sleep(3)
-            
-            # Type game ID carefully
-            run_shell_command(f"input text {game_id}", platform_info=platform_info)
-            time.sleep(3)
-            
-            # Press enter
-            run_shell_command("input keyevent KEYCODE_ENTER", platform_info=platform_info)
-            time.sleep(8)  # Longer wait for search results
-            
-            # Check if we can detect any game results in the current screen
-            # Instead of blind tapping, check if we're in a search results state
-            activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
-            if "search" in activity.lower() or "result" in activity.lower():
-                print_formatted("INFO", "🎯 Search results detected, attempting to select game...")
-                
-                # Try one careful tap in the center results area
-                run_shell_command("input tap 540 450", platform_info=platform_info)
-                time.sleep(5)
-                
-                # Check if we're now on a game page
-                if check_game_page():
-                    if tap_play_button():
-                        return True
-            
-            # If failed, clear and try next position
-            clear_search()
-            time.sleep(2)
-        
-        return False
-    except Exception as e:
-        print_formatted("ERROR", f"❌ Search navigation failed: {str(e)}")
-        return False
-
-def navigate_via_url_bar(game_id, private_server=''):
-    """Navigate using URL bar if available"""
-    try:
-        print_formatted("INFO", "Attempting navigation via URL bar...")
-        
-        # Look for URL/address bar
-        url_positions = [
-            (540, 100),   # Top center
-            (540, 150),   # Slightly lower
-            (540, 200)    # Alternative position
-        ]
-        
-        for x, y in url_positions:
-            run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-            time.sleep(2)
-            
-            # Build URL
-            if private_server:
-                url = f"roblox://experiences/start?placeId={game_id}&privateServerLinkCode={extract_private_server_code(private_server)}"
-            else:
-                url = f"roblox://experiences/start?placeId={game_id}"
-            
-            # Type URL
-            run_shell_command(f"input text '{url}'", platform_info=platform_info)
-            time.sleep(2)
-            
-            # Press enter
-            run_shell_command("input keyevent KEYCODE_ENTER", platform_info=platform_info)
-            time.sleep(10)
-            
-            # Check if navigation worked
-            if check_game_loading():
-                return True
-        
-        return False
-    except Exception as e:
-        print_formatted("ERROR", f"URL bar navigation failed: {str(e)}")
-        return False
-
-def navigate_via_menu(game_id, private_server=''):
-    """Navigate using menu options"""
-    try:
-        print_formatted("INFO", "Attempting navigation via menu...")
-        
-        # Look for menu button (hamburger menu, etc.)
-        menu_positions = [
-            (50, 100),    # Top-left menu
-            (50, 200),    # Left menu
-            (1020, 100),  # Top-right menu
-            (540, 50)     # Top-center menu
-        ]
-        
-        for x, y in menu_positions:
-            run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-            time.sleep(3)
-            
-            # Look for "Games" or similar option
-            if tap_games_option():
-                time.sleep(3)
-                
-                # Try to find featured games or search
-                if find_and_tap_game(game_id):
-                    if tap_play_button():
-                        return True
-        
-        return False
-    except Exception as e:
-        print_formatted("ERROR", f"Menu navigation failed: {str(e)}")
-        return False
-
-def tap_game_result():
-    """Tap on game search result"""
-    try:
-        # Common positions for search results
-        result_positions = [
-            (540, 400),   # Center result
-            (540, 500),   # Lower center
-            (270, 400),   # Left result
-            (810, 400)    # Right result
-        ]
-        
-        for x, y in result_positions:
-            run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-            time.sleep(3)
-            
-            # Check if game page loaded
-            if check_game_page():
-                return True
-        
-        return False
-    except:
-        return False
-
-def tap_play_button():
-    """Tap the play/join button - CAREFUL approach"""
-    try:
-        print_formatted("INFO", "🎮 Looking for Play button...")
-        
-        # Wait for page to stabilize
-        time.sleep(3)
-        
-        # Try fewer, more precise positions for play button
-        play_positions = [
-            (540, 800),   # Center-bottom (most common)
-            (540, 750),   # Slightly higher center
-        ]
-        
-        for attempt, (x, y) in enumerate(play_positions):
-            print_formatted("INFO", f"🎯 Play button attempt {attempt + 1}: tapping ({x}, {y})")
-            
-            run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-            time.sleep(8)  # Longer wait to see if game starts loading
-            
-            # Check if game started loading or Roblox launched
-            if check_game_loading() or is_roblox_running():
-                print_formatted("SUCCESS", "✓ Play button worked!")
-                return True
-        
-        print_formatted("WARNING", "⚠️ Play button attempts failed")
-        return False
-    except Exception as e:
-        print_formatted("ERROR", f"❌ Play button error: {str(e)}")
-        return False
-
-def clear_search():
-    """Clear search field"""
-    try:
-        # Select all and delete
-        run_shell_command("input keyevent KEYCODE_CTRL_LEFT", platform_info=platform_info)
-        run_shell_command("input keyevent KEYCODE_A", platform_info=platform_info)
-        run_shell_command("input keyevent KEYCODE_DEL", platform_info=platform_info)
-        time.sleep(1)
-    except:
-        pass
-
-def tap_games_option():
-    """Tap on Games menu option"""
-    try:
-        # Look for "Games" text in various positions
-        games_positions = [
-            (200, 300),   # Left menu games
-            (540, 300),   # Center games
-            (200, 400),   # Lower left games
-            (540, 400)    # Lower center games
-        ]
-        
-        for x, y in games_positions:
-            run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-            time.sleep(3)
-            
-            # Check if games section loaded
-            if check_games_section():
-                return True
-        
-        return False
-    except:
-        return False
-
-def find_and_tap_game(game_id):
-    """Find and tap specific game"""
-    try:
-        # Scroll through games and look for the target
-        for scroll_count in range(5):
-            # Try tapping various game positions
-            game_positions = [
-                (270, 500), (540, 500), (810, 500),  # Row 1
-                (270, 700), (540, 700), (810, 700),  # Row 2
-                (270, 900), (540, 900), (810, 900)   # Row 3
-            ]
-            
-            for x, y in game_positions:
-                run_shell_command(f"input tap {x} {y}", platform_info=platform_info)
-                time.sleep(2)
-                
-                if check_game_page():
-                    return True
-            
-            # Scroll down for more games
-            run_shell_command("input swipe 540 800 540 400 500", platform_info=platform_info)
-            time.sleep(2)
-        
-        return False
-    except:
-        return False
-
-def check_game_loading():
-    """Check if game is loading"""
-    try:
-        # Look for loading indicators in logcat
-        run_shell_command("logcat -c", platform_info=platform_info)
-        time.sleep(3)
-        
-        logs = run_shell_command("logcat -d -t 50 | grep -i 'loading\\|joining\\|connecting'", platform_info=platform_info)
-        return bool(logs.strip())
-    except:
-        return False
-
-def check_game_page():
-    """Check if on a game page"""
-    try:
-        # Check current activity for game page indicators
-        activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
-        game_page_indicators = ['GameDetail', 'GamePage', 'Experience']
-        return any(indicator in activity for indicator in game_page_indicators)
-    except:
-        return False
-
-def check_games_section():
-    """Check if in games section"""
-    try:
-        activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
-        games_indicators = ['Games', 'Discover', 'Browse']
-        return any(indicator in activity for indicator in games_indicators)
-    except:
-        return False
-
 # ======================
 # GAME STATE DETECTION
 # ======================
 def is_in_game(game_id, private_server=''):
     """Check if currently in the specified game"""
     try:
-        # Don't clear logcat - just check recent logs
-        time.sleep(1)
+        # Clear logcat and wait
+        run_shell_command("logcat -c", platform_info=platform_info)
+        time.sleep(3)
         
         # Check logcat for game join patterns
         patterns = [
@@ -848,9 +514,7 @@ def is_in_game(game_id, private_server=''):
             f"game[._]?id.*{game_id}",
             f"joining.*{game_id}",
             f"placeId={game_id}",
-            f"game[._]?join.*{game_id}",
-            f"loadPlace.*{game_id}",
-            f"teleport.*{game_id}"
+            f"game[._]?join.*{game_id}"
         ]
         
         if private_server:
@@ -861,28 +525,15 @@ def is_in_game(game_id, private_server=''):
                     f"privateServer.*{code}"
                 ])
         
-        # Check recent logs (last 100 lines to avoid missing logs)
-        log_command = f"logcat -d -t 100 | grep -iE '{'|'.join(patterns)}'"
+        log_command = f"logcat -d | grep -iE '{'|'.join(patterns)}' | head -n 200"
         logs = run_shell_command(log_command, platform_info=platform_info)
         
-        # Also check current activity
-        activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
-        
-        # More reliable detection: check both log presence AND activity
-        has_log_evidence = bool(logs.strip())
-        in_roblox_activity = ROBLOX_PACKAGE in activity
-        in_game_activity = is_game_activity(activity)
-        
-        # Additional check: ensure we're not in main menu
-        not_in_menu = not any(menu_indicator in activity for menu_indicator in ['MainActivity', 'HomeActivity', 'StartActivity'])
-        
-        if has_log_evidence and in_roblox_activity and (in_game_activity or not_in_menu):
-            return True
-        
-        # Backup check: if Roblox is running and we find game evidence in logs from last 5 minutes
-        if in_roblox_activity:
-            recent_logs = run_shell_command("logcat -d -t 500 | grep -iE 'place.*id|game.*join|loadPlace'", platform_info=platform_info)
-            if game_id in recent_logs:
+        if logs.strip():
+            # Also check current activity
+            activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
+            
+            if ROBLOX_PACKAGE in activity and is_game_activity(activity):
+                print_formatted("INFO", "Confirmed in correct game")
                 return True
         
         return False
@@ -905,7 +556,7 @@ def check_error_states():
     """Check for error states that require restart"""
     try:
         # Check logcat for errors
-        log_command = "logcat -d -t 100 | grep -iE 'crash|fatal|disconnected|kicked|banned|anr|timeout|luaerror|processerror'"
+        log_command = "logcat -d | grep -iE 'crash|fatal|disconnected|kicked|banned|anr|timeout|luaerror|processerror' | head -n 100"
         logs = run_shell_command(log_command, platform_info=platform_info)
         
         error_patterns = {
@@ -945,102 +596,74 @@ def attempt_game_join(config):
         print_formatted("ERROR", "No game ID specified in config")
         return False
     
-    print_formatted("INFO", f"🎮 Attempting to join game {game_id}")
+    print_formatted("INFO", f"Attempting to join game {game_id}")
     
-    # Close Roblox first only if it's running
-    if is_roblox_running():
-        print_formatted("INFO", "Closing existing Roblox session...")
-        if not close_roblox(config):
-            print_formatted("WARNING", "Failed to close Roblox properly, continuing anyway...")
-        time.sleep(3)
+    # Close Roblox first
+    if not close_roblox(config):
+        print_formatted("WARNING", "Failed to close Roblox properly")
     
-    # Try launch methods in order of reliability
+    time.sleep(3)
+    
+    # Try multiple launch methods
     methods = [
-        ("Deep Link", launch_via_deep_link),
-        ("Android Intent", launch_via_intent),
-        ("Browser Redirect", launch_via_browser_redirect),
-        ("UI Automation", launch_via_ui_automation)  # Last resort due to screen clicking
+        launch_via_deep_link,
+        launch_via_intent
     ]
     
-    for method_name, method_func in methods:
+    for method in methods:
         try:
-            print_formatted("INFO", f"🔄 Trying {method_name} method...")
+            print_formatted("INFO", f"Trying launch method: {method.__name__}")
             
-            if method_func(game_id, private_server):
-                print_formatted("SUCCESS", f"✓ {method_name} launched successfully!")
-                
-                # Wait for game to load and verify join
-                print_formatted("INFO", "⏳ Waiting for game to load...")
-                if wait_for_game_join(config, timeout=45):
+            if method(game_id, private_server):
+                # Wait for game to load
+                if wait_for_game_join(config, timeout=60):
                     last_game_join_time = time.time()
-                    print_formatted("SUCCESS", f"🎉 Successfully joined game using {method_name}!")
+                    print_formatted("SUCCESS", f"Successfully joined game using {method.__name__}")
                     return True
                 else:
-                    print_formatted("WARNING", f"⚠️ Game join timeout with {method_name}")
+                    print_formatted("WARNING", f"Game join timeout with {method.__name__}")
+                    close_roblox(config)  # Close before next attempt
             else:
-                print_formatted("WARNING", f"❌ {method_name} failed to launch")
+                print_formatted("WARNING", f"Failed to launch with {method.__name__}")
             
-            # Brief delay between attempts (reduced from 5s to 3s)
-            time.sleep(3)
+            # Brief delay between attempts
+            time.sleep(5)
             
         except Exception as e:
-            print_formatted("ERROR", f"❌ Error with {method_name}: {str(e)}")
+            print_formatted("ERROR", f"Error with {method.__name__}: {str(e)}")
             continue
     
-    print_formatted("ERROR", "❌ All launch methods failed")
+    print_formatted("ERROR", "All launch methods failed")
     return False
 
-def wait_for_game_join(config, timeout=45):
+def wait_for_game_join(config, timeout=60):
     """Wait for game to load and confirm join"""
     start_time = time.time()
     game_id = config.get('game_id')
     private_server = config.get('private_server', '')
     
-    print_formatted("INFO", f"🔍 Checking game join status (timeout: {timeout}s)...")
-    
-    # Check every 3 seconds instead of 2 to reduce system load
-    check_interval = 3
-    last_status_time = 0
-    
     while time.time() - start_time < timeout:
-        elapsed = int(time.time() - start_time)
-        
-        # Show progress every 10 seconds
-        if elapsed - last_status_time >= 10:
-            remaining = timeout - elapsed
-            print_formatted("INFO", f"⏱️ Still waiting for game join... {remaining}s remaining")
-            last_status_time = elapsed
-        
         if is_in_game(game_id, private_server):
-            print_formatted("SUCCESS", f"✓ Game join confirmed after {elapsed}s!")
             return True
-        
-        time.sleep(check_interval)
+        time.sleep(2)
     
-    print_formatted("WARNING", f"⚠️ Game join timeout after {timeout}s")
     return False
 
 def should_attempt_launch(config):
     """Determine if we should attempt to launch/rejoin the game"""
-    # Check if Roblox is running
     if not is_roblox_running():
-        print_formatted("INFO", "Roblox not running, need to launch")
-        return True
+        return True, "not_running"
     
-    # Check if we're in the correct game
     game_id = config.get('game_id')
     private_server = config.get('private_server', '')
     if not is_in_game(game_id, private_server):
-        print_formatted("INFO", "Not in correct game, need to rejoin")
-        return True
+        return True, "not_in_game"
     
-    # Check for error states
     error_state = check_error_states()
     if error_state:
-        print_formatted("WARNING", f"Error state detected: {error_state}")
-        return True
+        return True, error_state
     
-    return False
+    return False, "running"
 
 def automation_loop(config):
     """Main automation loop"""
@@ -1049,64 +672,18 @@ def automation_loop(config):
     automation_running = True
     print_formatted("SUCCESS", "Automation started successfully!")
     
-    # Initial game join attempt
-    if not attempt_game_join(config):
-        print_formatted("ERROR", "Failed to join game initially. Will keep trying...")
-    
-    consecutive_checks = 0
-    in_game_time = 0
-    
     while automation_running:
         try:
-            game_id = config.get('game_id')
-            private_server = config.get('private_server', '')
-            
-            # Check current status
-            roblox_running = is_roblox_running()
-            in_correct_game = is_in_game(game_id, private_server) if roblox_running else False
-            error_state = check_error_states()
-            
-            # Clear status reporting
-            if roblox_running and in_correct_game and not error_state:
-                consecutive_checks += 1
-                in_game_time += config.get('check_delay', 45)
-                
-                if consecutive_checks == 1:
-                    print_formatted("SUCCESS", f"✓ Successfully in game {game_id}")
-                    print_formatted("INFO", "Monitoring game status... (automation will only restart if there's a problem)")
-                elif consecutive_checks % 4 == 0:  # Every 4 checks (~3 minutes)
-                    minutes = in_game_time // 60
-                    print_formatted("INFO", f"✓ Still in game - Running for {minutes} minutes")
-                
+            should, reason = should_attempt_launch(config)
+            if should:
+                print_formatted("WARNING", f"Rejoin triggered: {reason}")
+                attempt_game_join(config)
             else:
-                # Reset counters when not in game
-                if consecutive_checks > 0:
-                    print_formatted("WARNING", "No longer in game - investigating...")
-                consecutive_checks = 0
-                in_game_time = 0
-                
-                # Determine what action to take
-                if error_state:
-                    print_formatted("ERROR", f"✗ Problem detected: {error_state}")
-                    print_formatted("INFO", "Restarting due to error...")
-                    if attempt_game_join(config):
-                        print_formatted("SUCCESS", "✓ Successfully rejoined after error")
-                elif not roblox_running:
-                    print_formatted("WARNING", "✗ Roblox not running")
-                    print_formatted("INFO", "Launching Roblox...")
-                    if attempt_game_join(config):
-                        print_formatted("SUCCESS", "✓ Successfully launched Roblox")
-                elif not in_correct_game:
-                    print_formatted("WARNING", f"✗ Not in correct game {game_id}")
-                    print_formatted("INFO", "Attempting to join correct game...")
-                    if attempt_game_join(config):
-                        print_formatted("SUCCESS", "✓ Successfully joined correct game")
+                print_formatted("SUCCESS", "Roblox is running and in game")
             
             # Wait before next check
             check_delay = config.get('check_delay', 45)
-            if consecutive_checks == 0:  # Only show countdown when not stable in game
-                print_formatted("INFO", f"Next check in {check_delay} seconds...")
-            
+            print_formatted("INFO", f"Waiting {check_delay} seconds before next check...")
             time.sleep(check_delay)
             
         except KeyboardInterrupt:

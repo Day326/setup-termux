@@ -44,24 +44,28 @@ class PlatformDetector:
     def detect_platform(self):
         try:
             if self._is_ugphone():
+                has_root = self._check_root_ugphone()
+                su_prefix = 'ugphone_su -c' if self._ugphone_su_works() else 'su -c' if has_root else ''
                 self.detected_platform = {
                     'type': 'ugphone',
                     'name': 'UGPHONE',
-                    'has_root': self._check_root_ugphone(),
+                    'has_root': has_root,
                     'use_adb': False,
-                    'shell_prefix': '',
+                    'shell_prefix': su_prefix,
                     'special_commands': True
                 }
                 print_formatted("INFO", f"Platform detected: {self.detected_platform['name']}")
                 return self.detected_platform
             
             if self._is_vsphone():
+                has_root = self._check_root_vsphone()
+                su_prefix = 'vsphone_su -c' if self._vsphone_su_works() else 'su -c' if has_root else ''
                 self.detected_platform = {
                     'type': 'vsphone',
                     'name': 'VSPHONE',
-                    'has_root': self._check_root_vsphone(),
+                    'has_root': has_root,
                     'use_adb': False,
-                    'shell_prefix': '',
+                    'shell_prefix': su_prefix,
                     'special_commands': True
                 }
                 print_formatted("INFO", f"Platform detected: {self.detected_platform['name']}")
@@ -184,11 +188,27 @@ class PlatformDetector:
             return 'test' in result.stdout
         except:
             return False
+
+    def _ugphone_su_works(self):
+        try:
+            result = subprocess.run(['ugphone_su', '-c', 'echo test'], 
+                                  capture_output=True, text=True, timeout=5)
+            return 'test' in result.stdout
+        except:
+            return False
     
     def _check_root_vsphone(self):
         try:
             if self._check_root_standard():
                 return True
+            result = subprocess.run(['vsphone_su', '-c', 'echo test'], 
+                                  capture_output=True, text=True, timeout=5)
+            return 'test' in result.stdout
+        except:
+            return False
+    
+    def _vsphone_su_works(self):
+        try:
             result = subprocess.run(['vsphone_su', '-c', 'echo test'], 
                                   capture_output=True, text=True, timeout=5)
             return 'test' in result.stdout
@@ -209,7 +229,7 @@ def print_formatted(level, message):
 
 def run_shell_command(command, timeout=10, platform_info=None):
     try:
-        if platform_info and platform_info.get('use_adb') and platform_info.get('shell_prefix'):
+        if platform_info and platform_info.get('shell_prefix'):
             full_command = platform_info['shell_prefix'].split() + [command]
         else:
             full_command = command.split()
@@ -310,24 +330,24 @@ def is_roblox_running(retries=3, delay=2):
 def close_roblox(config=None):
     try:
         print_formatted("INFO", "Closing Roblox...")
-        run_shell_command("input keyevent KEYCODE_HOME", platform_info=platform_info)
-        time.sleep(2)
-        run_shell_command(f"am force-stop {ROBLOX_PACKAGE}", platform_info=platform_info)
-        time.sleep(2)
-        run_shell_command(f"killall -9 {ROBLOX_PACKAGE}", platform_info=platform_info)
-        run_shell_command(f"pkill -9 -f {ROBLOX_PACKAGE}", platform_info=platform_info)
-        force_kill_delay = config.get("force_kill_delay", 10) if config else 10
-        time.sleep(force_kill_delay)
-        if is_roblox_running():
-            print_formatted("WARNING", "Roblox still running, clearing cache...")
+        max_tries = 3
+        for attempt in range(max_tries):
+            run_shell_command("input keyevent KEYCODE_HOME", platform_info=platform_info)
+            time.sleep(2)
+            run_shell_command(f"am force-stop {ROBLOX_PACKAGE}", platform_info=platform_info)
+            time.sleep(2)
+            run_shell_command(f"killall -9 {ROBLOX_PACKAGE}", platform_info=platform_info)
+            run_shell_command(f"pkill -9 -f {ROBLOX_PACKAGE}", platform_info=platform_info)
+            force_kill_delay = config.get("force_kill_delay", 10) if config else 10
+            time.sleep(force_kill_delay)
+            if not is_roblox_running():
+                print_formatted("SUCCESS", "Roblox closed successfully")
+                return True
+            print_formatted("WARNING", f"Roblox still running after attempt {attempt+1}, retrying...")
             run_shell_command(f"rm -rf /data/data/{ROBLOX_PACKAGE}/cache/*", platform_info=platform_info)
             time.sleep(5)
-        success = not is_roblox_running()
-        if success:
-            print_formatted("SUCCESS", "Roblox closed successfully")
-        else:
-            print_formatted("ERROR", "Failed to close Roblox completely")
-        return success
+        print_formatted("ERROR", "Failed to close Roblox completely after max attempts")
+        return False
     except Exception as e:
         print_formatted("ERROR", f"Failed to close Roblox: {str(e)}")
         return False
@@ -442,35 +462,37 @@ def launch_via_browser_redirect(game_id, private_server=''):
         return False
 
 # Game State Detection
-def is_in_game(game_id, private_server=''):
+def is_in_game(game_id, private_server='', confirm_game_id=False):
     try:
-        run_shell_command("logcat -c", platform_info=platform_info)
         time.sleep(2)
-        patterns = [
-            f"place[._]?id.*{game_id}",
-            f"game[._]?id.*{game_id}",
-            f"joining.*{game_id}",
-            f"placeId={game_id}",
-            f"game[._]?join.*{game_id}"
-        ]
-        if private_server:
-            code = extract_private_server_code(private_server)
-            if code:
-                patterns.extend([
-                    f"linkCode={code}",
-                    f"privateServer.*{code}"
-                ])
-        log_command = f"logcat -d | grep -iE '{'|'.join(patterns)}'"
-        logs = run_shell_command(log_command, platform_info=platform_info)
-        if logs.strip():
-            activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
-            if ROBLOX_PACKAGE in activity and is_game_activity(activity):
+        activity = run_shell_command("dumpsys window windows | grep mCurrentFocus", platform_info=platform_info)
+        if not (ROBLOX_PACKAGE in activity and is_game_activity(activity)):
+            print_formatted("INFO", "Not in game activity")
+            return False
+        if confirm_game_id:
+            patterns = [
+                f"place[._]?id.*{game_id}",
+                f"game[._]?id.*{game_id}",
+                f"joining.*{game_id}",
+                f"placeId={game_id}",
+                f"game[._]?join.*{game_id}"
+            ]
+            if private_server:
+                code = extract_private_server_code(private_server)
+                if code:
+                    patterns.extend([
+                        f"linkCode={code}",
+                        f"privateServer.*{code}"
+                    ])
+            log_command = f"logcat -d | grep -iE '{'|'.join(patterns)}'"
+            logs = run_shell_command(log_command, platform_info=platform_info)
+            if logs.strip():
                 print_formatted("INFO", f"Confirmed in game: {game_id}")
                 return True
-            print_formatted("INFO", "Game logs found but not in game activity")
-        else:
-            print_formatted("INFO", "No game logs found")
-        return False
+            else:
+                print_formatted("INFO", "No game logs found for confirmation")
+                return False
+        return True
     except Exception as e:
         print_formatted("ERROR", f"Game detection error: {str(e)}")
         return False
@@ -487,7 +509,6 @@ def is_game_activity(activity):
 
 def check_error_states():
     try:
-        run_shell_command("logcat -c", platform_info=platform_info)
         time.sleep(2)
         log_command = "logcat -d | grep -iE 'crash|fatal|disconnected|kicked|banned|anr|timeout|luaerror|processerror|sigsegv|segmentation fault|unexpected disconnect|error code|ban|kick|freeze|not responding|application not responding'"
         logs = run_shell_command(log_command, platform_info=platform_info)
@@ -526,6 +547,7 @@ def attempt_game_join(config):
     print_formatted("INFO", f"Attempting to join game {game_id}")
     if not close_roblox(config):
         print_formatted("WARNING", "Failed to close Roblox properly")
+    run_shell_command("logcat -c", platform_info=platform_info)
     time.sleep(3)
     methods = [
         launch_via_deep_link,
@@ -536,7 +558,7 @@ def attempt_game_join(config):
         try:
             print_formatted("INFO", f"Trying launch method: {method.__name__}")
             if method(game_id, private_server):
-                if wait_for_game_join(config, timeout=180):  # Increased to 3 minutes
+                if wait_for_game_join(config, timeout=180):
                     last_game_join_time = time.time()
                     print_formatted("SUCCESS", f"Successfully joined game using {method.__name__}")
                     return True
@@ -556,9 +578,9 @@ def wait_for_game_join(config, timeout=180):
     game_id = config.get('game_id')
     private_server = config.get('private_server', '')
     while time.time() - start_time < timeout:
-        if is_in_game(game_id, private_server):
+        if is_in_game(game_id, private_server, confirm_game_id=True):
             return True
-        time.sleep(10)  # Increased to 10 seconds for better join detection
+        time.sleep(10)
     print_formatted("INFO", "Game join timeout, checking error states")
     error_state = check_error_states()
     if error_state:
@@ -571,7 +593,7 @@ def should_attempt_launch(config):
         return True
     game_id = config.get('game_id')
     private_server = config.get('private_server', '')
-    if not is_in_game(game_id, private_server):
+    if not is_in_game(game_id, private_server, confirm_game_id=False):
         print_formatted("INFO", "Not in correct game, need to rejoin")
         return True
     error_state = check_error_states()
@@ -588,15 +610,20 @@ def automation_loop(config):
     while automation_running:
         try:
             if should_attempt_launch(config):
-                attempt_game_join(config)
+                success = attempt_game_join(config)
+                if success:
+                    run_shell_command("logcat -c", platform_info=platform_info)
             else:
                 print_formatted("INFO", f"Monitoring game {config.get('game_id')}...")
                 error_state = check_error_states()
                 if error_state:
                     print_formatted("WARNING", f"Game ended due to {error_state}, attempting rejoin...")
-                    attempt_game_join(config)
+                    success = attempt_game_join(config)
+                    if success:
+                        run_shell_command("logcat -c", platform_info=platform_info)
                 else:
                     print_formatted("INFO", "Game running, continuing monitoring...")
+                    run_shell_command("logcat -c", platform_info=platform_info)
             check_delay = config.get('check_delay', 45)
             print_formatted("INFO", f"Waiting {check_delay} seconds before next check...")
             time.sleep(check_delay)

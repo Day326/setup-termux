@@ -2,7 +2,7 @@
 """
 Enhanced Roblox Automation Tool (Rejoiner.py)
 Supports: UGPHONE, VSPHONE, REDFINGER, Standard Android/Emulators
-Author: Optimized for reliable deep link joining
+Author: Optimized for game monitoring and rejoin
 """
 
 import requests
@@ -392,7 +392,7 @@ def launch_via_deep_link(game_id, private_server=''):
         url = build_game_url(game_id, private_server)
         command = f'am start -a android.intent.action.VIEW -d "{url}"'
         result = run_shell_command(command, platform_info=platform_info)
-        time.sleep(20)  # Increased to 20 seconds for proper joining
+        time.sleep(120)  # Increased to 120 seconds for proper joining
         if is_roblox_running():
             print_formatted("SUCCESS", "Roblox launched via deep link")
             return True
@@ -536,7 +536,7 @@ def attempt_game_join(config):
         try:
             print_formatted("INFO", f"Trying launch method: {method.__name__}")
             if method(game_id, private_server):
-                if wait_for_game_join(config, timeout=60):
+                if wait_for_game_join(config, timeout=180):  # Increased to 3 minutes
                     last_game_join_time = time.time()
                     print_formatted("SUCCESS", f"Successfully joined game using {method.__name__}")
                     return True
@@ -551,14 +551,14 @@ def attempt_game_join(config):
     print_formatted("ERROR", "All launch methods failed")
     return False
 
-def wait_for_game_join(config, timeout=60):
+def wait_for_game_join(config, timeout=180):
     start_time = time.time()
     game_id = config.get('game_id')
     private_server = config.get('private_server', '')
     while time.time() - start_time < timeout:
         if is_in_game(game_id, private_server):
             return True
-        time.sleep(5)  # Increased to 5 seconds for better join detection
+        time.sleep(10)  # Increased to 10 seconds for better join detection
     print_formatted("INFO", "Game join timeout, checking error states")
     error_state = check_error_states()
     if error_state:
@@ -590,7 +590,13 @@ def automation_loop(config):
             if should_attempt_launch(config):
                 attempt_game_join(config)
             else:
-                print_formatted("INFO", "Monitoring continues...")
+                print_formatted("INFO", f"Monitoring game {config.get('game_id')}...")
+                error_state = check_error_states()
+                if error_state:
+                    print_formatted("WARNING", f"Game ended due to {error_state}, attempting rejoin...")
+                    attempt_game_join(config)
+                else:
+                    print_formatted("INFO", "Game running, continuing monitoring...")
             check_delay = config.get('check_delay', 45)
             print_formatted("INFO", f"Waiting {check_delay} seconds before next check...")
             time.sleep(check_delay)
